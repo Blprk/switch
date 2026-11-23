@@ -170,7 +170,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func tick() {
         checkLid()
         checkSession()
-        updateUI()
+        // Only the menu-bar title changes every 2s. Rebuilding the popover
+        // here would recreate its view while it is open and cause flicker.
+        updateButton()
     }
 
     func isLidClosed() -> Bool {
@@ -440,19 +442,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - UI
 
-    func updateUI() {
-        if let button = statusItem.button {
-            let color: NSColor
-            switch state {
-            case .off: color = .secondaryLabelColor
-            case .active: color = .systemGreen
-            case .lidPaused: color = .systemOrange
-            }
-            button.attributedTitle = NSAttributedString(string: menuBarTitle(), attributes: [
-                .foregroundColor: color,
-                .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .semibold)
-            ])
+    func updateButton() {
+        guard let button = statusItem.button else { return }
+        let color: NSColor
+        switch state {
+        case .off: color = .secondaryLabelColor
+        case .active: color = .systemGreen
+        case .lidPaused: color = .systemOrange
         }
+        button.attributedTitle = NSAttributedString(string: menuBarTitle(), attributes: [
+            .foregroundColor: color,
+            .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .semibold)
+        ])
+    }
+
+    func updateUI() {
+        updateButton()
         rebuildPopover()
     }
 
