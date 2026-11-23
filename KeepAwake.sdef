@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE dictionary SYSTEM "file://localhost/System/Library/DTDs/sdef.dtd">
+
+<dictionary title="KeepAwake Terminology">
+
+    <suite name="KeepAwake Suite" code="Kawk" description="Control KeepAwake keep-awake sessions.">
+
+        <command name="session is active" code="KawkActv" description="Returns true while a session is running (including lid-paused sessions).">
+            <cocoa class="NSApplication"/>
+            <result type="boolean" description="Whether a KeepAwake session is active."/>
+        </command>
+
+        <command name="start session" code="KawkStrt" description="Starts a session. With no parameters, starts an indefinite session.">
+            <cocoa class="NSApplication"/>
+            <direct-parameter type="integer" optional="yes" description="Duration in minutes. Omit for an indefinite session."/>
+        </command>
+
+        <command name="end session" code="KawkEndS" description="Ends the current session and releases all assertions.">
+            <cocoa class="NSApplication"/>
+        </command>
+
+        <command name="time remaining" code="KawkTime" description="Returns seconds remaining in a timed session, or 0 for indefinite sessions.">
+            <cocoa class="NSApplication"/>
+            <result type="integer" description="Seconds remaining."/>
+        </command>
+
+    </suite>
+
+</dictionary>

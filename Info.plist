@@ -5,12 +5,14 @@
   <key>CFBundleName</key><string>KeepAwake</string>
   <key>CFBundleDisplayName</key><string>KeepAwake</string>
   <key>CFBundleIdentifier</key><string>com.user.keepawakeapp</string>
-  <key>CFBundleVersion</key><string>1.0</string>
-  <key>CFBundleShortVersionString</key><string>1.0</string>
+  <key>CFBundleVersion</key><string>1.4.0</string>
+  <key>CFBundleShortVersionString</key><string>1.4.0</string>
   <key>CFBundleExecutable</key><string>KeepAwake</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>LSUIElement</key><true/>
   <key>LSMinimumSystemVersion</key><string>11.0</string>
   <key>NSHighResolutionCapable</key><true/>
+  <key>NSAppleScriptEnabled</key><true/>
+  <key>OSAScriptingDefinition</key><string>KeepAwake.sdef</string>
 </dict>
 </plist>

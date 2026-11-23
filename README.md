@@ -30,8 +30,12 @@ A tiny, native macOS menu-bar app that keeps your Mac awake — **only when you 
 | Lid-close handling | Auto-releases assertions on close, re-engages on open |
 | Live info shown | State, session condition + exit time, last event, assertion count, power source, battery %, lid state, uptime, session age, download source |
 | Auto-launch | `~/Library/LaunchAgents/com.user.keepawakeapp.plist` (`RunAtLoad`) |
-| Binary size | ~137 KB (`-Osize`, dead-strip, stripped) |
+| Binary size | ~156 KB (`-Osize`, dead-strip, stripped) |
 | Memory | ~a few MB; ~0% CPU (2s lid/session check via `ioreg`) |
+| Configurable assertions | Display / System / Disk groups can be turned on or off individually |
+| AppleScript | `session is active`, `start session [minutes]`, `end session`, `time remaining` |
+| Diagnostics | In-app event log + "Copy Diagnostics" button |
+| Custom download folder | Choose any folder via file picker |
 
 ## Session modes
 
@@ -64,6 +68,35 @@ There is one source of truth — `AppState` — with exactly three states and on
 | `LID PAUSED` | `⏸` | Session still saved, assertions released because lid is closed | Reopen lid → returns to `ACTIVE` |
 
 The popup states the current state, the session's exit condition ("Ends in 14m", "Ends when Safari quits", "Ends 30s after downloads stop"), the last transition event, and how many assertions are held. No hidden/implicit state flags remain.
+
+## Settings & controls
+
+The popup includes a **Settings** section:
+
+- **Keep display awake** — turns off `PreventUserIdleDisplaySleep` + `UserIsActive`. Disable this to let the screen sleep while the Mac stays awake (e.g. during a download).
+- **Keep system awake** — turns off `PreventUserIdleSystemSleep` + `PreventSystemSleep` (the latter is AC-power only).
+- **Keep disks awake** — turns off `PreventDiskIdle`.
+- **Download folder** — pick any folder instead of `~/Downloads`.
+- **Default session** — what "Turn On" starts: Indefinite or Last used (with its previous duration/app).
+- **Menu bar** — Countdown (`● 14m`), Dot (`● ON`), or Icon (`⏱`).
+- **Login at startup** — enable/disable the LaunchAgent from the popup.
+- **Debug Log** — last four events, plus a **Copy Diagnostics** button that puts version, state, session info, assertion groups, power, download source and the last 30 log lines on the clipboard.
+
+Changing assertion groups while a session is active releases and re-acquires only the enabled assertions.
+
+## AppleScript
+
+KeepAwake is scriptable (via `KeepAwake.sdef`):
+
+```applescript
+tell application "KeepAwake"
+    session is active        -- true / false
+    start session            -- indefinite
+    start session 15         -- 15 minute timed session
+    time remaining           -- seconds (0 for indefinite)
+    end session
+end tell
+```
 
 ## Install
 

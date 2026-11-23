@@ -2,7 +2,7 @@ import Cocoa
 import IOKit
 import IOKit.pwr_mgt
 
-// MARK: - Explicit state model
+// MARK: - Models
 
 enum SessionMode: String {
     case indefinite
@@ -13,11 +13,29 @@ enum SessionMode: String {
     case download
 }
 
-/// The single source of truth for what the app is doing.
 enum AppState: String {
     case off = "OFF"
     case active = "ACTIVE"
     case lidPaused = "LID PAUSED"
+}
+
+enum MenuBarStyle: String {
+    case countdown
+    case dot
+    case icon
+}
+
+struct Preferences {
+    var keepDisplay: Bool = true
+    var keepSystem: Bool = true
+    var keepDisk: Bool = true
+    var downloadFolder: String = NSString(string: "~/Downloads").expandingTildeInPath
+    var defaultSession: String = "indefinite" // "indefinite" | "lastUsed"
+    var menuBarStyle: String = MenuBarStyle.countdown.rawValue
+    var lastSessionMode: String = SessionMode.indefinite.rawValue
+    var lastDuration: TimeInterval = 0
+    var lastAppBundleID: String?
+    var lastAppName: String?
 }
 
 class AppDelegate: NSObject, NSApplicationDelegate {
@@ -28,8 +46,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // State machine
     var state: AppState = .off
     var lastEvent: String = "Started"
+    var eventLog: [String] = []
 
-    // Session configuration (meaningful while state is .active or .lidPaused)
+    // Session configuration
     var sessionMode: SessionMode = .indefinite
     var sessionEndDate: Date?
     var sessionStartedAt: Date?
@@ -37,26 +56,34 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var sessionAppName: String?
     var appChoices: [(name: String, bundleID: String)] = []
 
-    // Download monitoring
+    // Downloads
     var downloadBaseline: [String: Int64] = [:]
     var lastDownloadActivity: Date = Date()
     var downloadSource: String = "Downloads folder"
 
-    // Live display stats
+    // Settings
+    var prefs = Preferences()
+
+    // Display stats
     var batteryLine: String = "—"
     var powerSource: String = "—"
     var uptimeLine: String = "—"
     var lidIsClosed: Bool = false
 
-    // IOPM assertions
-    var assertionIDs: [IOPMAssertionID] = []
-    static let assertionTypes = [
+    // Assertion IDs by type
+    var assertionIDs: [String: IOPMAssertionID] = [:]
+    static let allAssertionTypes = [
         "PreventUserIdleDisplaySleep",
         "PreventUserIdleSystemSleep",
         "PreventSystemSleep",
         "PreventDiskIdle",
         "UserIsActive"
     ]
+
+    var loginAgentPath: String {
+        NSString(string: "~/Library/LaunchAgents/com.user.keepawakeapp.plist").expandingTildeInPath
+    }
+    var loginEnabled: Bool { FileManager.default.fileExists(atPath: loginAgentPath) }
 
     // MARK: - Lifecycle
 
@@ -66,9 +93,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.terminate(nil)
             return
         }
-
         NSApp.setActivationPolicy(.accessory)
         ProcessInfo.processInfo.disableAutomaticTermination("KeepAwake")
+        registerAppleScriptHandlers()
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
@@ -77,18 +104,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         }
 
+        UserDefaults.standard.removeObject(forKey: "isOn") // stale key
+        loadPreferences()
+
         let defaults = UserDefaults.standard
-        defaults.removeObject(forKey: "isOn") // stale key from older versions
         let savedOn = (defaults.object(forKey: "userWantsOn") as? Bool) ?? true
         loadSession()
 
-        let lidClosed = isLidClosed()
-        state = savedOn ? (lidClosed ? .lidPaused : .active) : .off
-        lastEvent = "Launched"
+        let closed = isLidClosed()
+        state = savedOn ? (closed ? .lidPaused : .active) : .off
         if state != .off { sessionStartedAt = Date() }
         if state == .active { acquireAssertions() }
         if sessionMode == .download { resetDownloadBaseline() }
 
+        logEvent("Launched (v1.4.0)")
         refreshStats()
         updateUI()
 
@@ -102,13 +131,96 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         releaseAssertions()
     }
 
+    // MARK: - AppleScript
+
+    func registerAppleScriptHandlers() {
+        let manager = NSAppleEventManager.shared()
+        let eventClass = OSType(0x4B61776B) // 'Kawk'
+        for eventID in [OSType(0x41637476), OSType(0x53747274), OSType(0x456E6453), OSType(0x54696D65)] {
+            manager.setEventHandler(self,
+                                    andSelector: #selector(handleAppleEvent(_:withReplyEvent:)),
+                                    forEventClass: eventClass,
+                                    andEventID: eventID)
+        }
+    }
+
+    @objc func handleAppleEvent(_ event: NSAppleEventDescriptor, withReplyEvent reply: NSAppleEventDescriptor) {
+        let directKeyword = AEKeyword(0x2D2D2D2D)
+        switch event.eventID {
+        case OSType(0x41637476): // session is active
+            reply.setParam(NSAppleEventDescriptor(boolean: state != .off), forKeyword: directKeyword)
+        case OSType(0x53747274): // start session
+            let minutes = event.paramDescriptor(forKeyword: directKeyword)?.int32Value ?? 0
+            if minutes > 0 {
+                startSession(.minutes, endDate: Date().addingTimeInterval(Double(minutes) * 60),
+                             event: "AppleScript: \(minutes) minute session")
+            } else {
+                startSession(.indefinite, event: "AppleScript: indefinite session")
+            }
+        case OSType(0x456E6453): // end session
+            endSession(event: "AppleScript: end session")
+        case OSType(0x54696D65): // time remaining
+            let seconds: Int
+            if state != .off, let end = sessionEndDate {
+                seconds = Int(end.timeIntervalSinceNow)
+            } else {
+                seconds = 0
+            }
+            reply.setParam(NSAppleEventDescriptor(int32: Int32(max(0, seconds))), forKeyword: directKeyword)
+        default:
+            break
+        }
+    }
+
+    // MARK: - Logging
+
+    func logEvent(_ message: String) {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        eventLog.append("\(formatter.string(from: Date())) \(message)")
+        if eventLog.count > 100 { eventLog.removeFirst(eventLog.count - 100) }
+    }
+
+    // MARK: - Preferences
+
+    func loadPreferences() {
+        let d = UserDefaults.standard
+        var p = Preferences()
+        if d.object(forKey: "keepDisplay") != nil { p.keepDisplay = d.bool(forKey: "keepDisplay") }
+        if d.object(forKey: "keepSystem") != nil { p.keepSystem = d.bool(forKey: "keepSystem") }
+        if d.object(forKey: "keepDisk") != nil { p.keepDisk = d.bool(forKey: "keepDisk") }
+        if let folder = d.string(forKey: "downloadFolder") { p.downloadFolder = folder }
+        if let value = d.string(forKey: "defaultSession") { p.defaultSession = value }
+        if let value = d.string(forKey: "menuBarStyle"),
+           let style = MenuBarStyle(rawValue: value) { p.menuBarStyle = style.rawValue }
+        if let value = d.string(forKey: "lastSessionMode") { p.lastSessionMode = value }
+        if let value = d.object(forKey: "lastDuration") as? TimeInterval { p.lastDuration = value }
+        p.lastAppBundleID = d.string(forKey: "lastAppBundleID")
+        p.lastAppName = d.string(forKey: "lastAppName")
+        prefs = p
+    }
+
+    func savePreferences() {
+        let d = UserDefaults.standard
+        d.set(prefs.keepDisplay, forKey: "keepDisplay")
+        d.set(prefs.keepSystem, forKey: "keepSystem")
+        d.set(prefs.keepDisk, forKey: "keepDisk")
+        d.set(prefs.downloadFolder, forKey: "downloadFolder")
+        d.set(prefs.defaultSession, forKey: "defaultSession")
+        d.set(prefs.menuBarStyle, forKey: "menuBarStyle")
+        d.set(prefs.lastSessionMode, forKey: "lastSessionMode")
+        d.set(prefs.lastDuration, forKey: "lastDuration")
+        d.set(prefs.lastAppBundleID, forKey: "lastAppBundleID")
+        d.set(prefs.lastAppName, forKey: "lastAppName")
+    }
+
     // MARK: - State machine
 
-    /// Every change of state goes through here: assertions, persistence, UI.
     func transition(to newState: AppState, event: String) {
         let old = state
         state = newState
         lastEvent = event
+        logEvent(event)
 
         switch newState {
         case .off:
@@ -122,7 +234,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         case .lidPaused:
             releaseAssertions()
         }
-
         if old != newState { updateUI() }
     }
 
@@ -137,6 +248,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         sessionAppBundleID = appBundleID
         sessionAppName = appName
         if mode == .download { resetDownloadBaseline() }
+
+        prefs.lastSessionMode = mode.rawValue
+        prefs.lastDuration = endDate.map { max(0, $0.timeIntervalSinceNow) } ?? 0
+        prefs.lastAppBundleID = appBundleID
+        prefs.lastAppName = appName
+        savePreferences()
+
         transition(to: isLidClosed() ? .lidPaused : .active, event: event)
     }
 
@@ -144,11 +262,35 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         transition(to: .off, event: event)
     }
 
-    // MARK: - Assertions
+    func restoreLastSession() {
+        let mode = SessionMode(rawValue: prefs.lastSessionMode) ?? .indefinite
+        switch mode {
+        case .minutes, .hours, .until:
+            startSession(mode, endDate: Date().addingTimeInterval(prefs.lastDuration), event: "Restored last session")
+        case .app:
+            if let bundle = prefs.lastAppBundleID {
+                startSession(.app, appBundleID: bundle, appName: prefs.lastAppName, event: "Restored last app session")
+            } else {
+                startSession(.indefinite, event: "Restored indefinite session")
+            }
+        default:
+            startSession(mode, event: "Restored last session")
+        }
+    }
+
+    // MARK: - Assertions (individually configurable)
+
+    func enabledAssertionTypes() -> [String] {
+        var types: [String] = []
+        if prefs.keepDisplay { types += ["PreventUserIdleDisplaySleep", "UserIsActive"] }
+        if prefs.keepSystem { types += ["PreventUserIdleSystemSleep", "PreventSystemSleep"] }
+        if prefs.keepDisk { types += ["PreventDiskIdle"] }
+        return types
+    }
 
     func acquireAssertions() {
         guard assertionIDs.isEmpty else { return }
-        for type in Self.assertionTypes {
+        for type in enabledAssertionTypes() {
             var id: IOPMAssertionID = 0
             let result = IOPMAssertionCreateWithName(
                 type as CFString,
@@ -156,13 +298,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 "KeepAwake" as CFString,
                 &id
             )
-            if result == kIOReturnSuccess { assertionIDs.append(id) }
+            if result == kIOReturnSuccess {
+                assertionIDs[type] = id
+            } else {
+                logEvent("Assertion failed: \(type)")
+            }
         }
     }
 
     func releaseAssertions() {
-        for id in assertionIDs { IOPMAssertionRelease(id) }
+        for (_, id) in assertionIDs { IOPMAssertionRelease(id) }
         assertionIDs.removeAll()
+    }
+
+    func reconfigureAssertions() {
+        releaseAssertions()
+        if state == .active { acquireAssertions() }
+        savePreferences()
+        logEvent("Assertion groups updated")
+        updateUI()
     }
 
     // MARK: - Monitoring
@@ -170,8 +324,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func tick() {
         checkLid()
         checkSession()
-        // Only the menu-bar title changes every 2s. Rebuilding the popover
-        // here would recreate its view while it is open and cause flicker.
         updateButton()
     }
 
@@ -200,18 +352,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         case .indefinite:
             break
         case .minutes, .hours, .until:
-            if let end = sessionEndDate, Date() >= end {
-                endSession(event: "Timer expired")
-            }
+            if let end = sessionEndDate, Date() >= end { endSession(event: "Timer expired") }
         case .app:
-            guard let bid = sessionAppBundleID else {
+            guard let bundle = sessionAppBundleID else {
                 endSession(event: "App session lost its target")
                 return
             }
-            let stillRunning = NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == bid }
-            if !stillRunning {
-                endSession(event: "\(sessionAppName ?? "App") quit")
-            }
+            let running = NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == bundle }
+            if !running { endSession(event: "\(sessionAppName ?? "App") quit") }
         case .download:
             let status = downloadStatus()
             downloadSource = status.source
@@ -223,11 +371,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    // MARK: - Download detection (returns values; no hidden side effects)
+    // MARK: - Downloads
 
     func downloadSnapshot() -> [String: Int64] {
         let fm = FileManager.default
-        let dir = NSString(string: "~/Downloads").expandingTildeInPath
+        let dir = prefs.downloadFolder
         var result: [String: Int64] = [:]
         guard let files = try? fm.contentsOfDirectory(atPath: dir) else { return result }
         for file in files {
@@ -245,12 +393,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         downloadSource = downloadStatus().source
     }
 
-    /// Returns whether a download is active and which source was readable.
     func downloadStatus() -> (active: Bool, source: String) {
         var active = false
         var browserReadable = false
 
-        // Safari: ~/Library/Safari/Downloads.plist
         let safari = NSString(string: "~/Library/Safari/Downloads.plist").expandingTildeInPath
         if FileManager.default.fileExists(atPath: safari) {
             let out = shell("/usr/bin/plutil -convert json -o - \"\(safari)\" 2>/dev/null")
@@ -260,7 +406,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                let items = dict["DownloadHistory"] as? [[String: Any]] {
                 browserReadable = true
                 for item in items {
-                    if let s = item["DownloadEntryState"] as? Int, s == 0 { active = true }
+                    if let state = item["DownloadEntryState"] as? Int, state == 0 { active = true }
                     if let soFar = item["DownloadEntryProgressBytesSoFar"] as? Int,
                        let total = item["DownloadEntryProgressTotalToLoad"] as? Int,
                        total > 0, soFar < total { active = true }
@@ -268,8 +414,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        // Chromium browsers (state 0 = in progress)
-        let cmd = """
+        let command = """
         setopt NULL_GLOB
         for f in "$HOME/Library/Application Support/Google/Chrome"/*/History \
                  "$HOME/Library/Application Support/BraveSoftware/Brave-Browser"/*/History \
@@ -280,24 +425,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
           [ -n "$n" ] && [ "$n" != "0" ] && echo ACTIVE
         done
         """
-        if shell(cmd).contains("ACTIVE") {
+        if shell(command).contains("ACTIVE") {
             active = true
             browserReadable = true
         }
 
-        // ~/Downloads heuristic (also covers browsers we can't read)
-        let snap = downloadSnapshot()
+        let snapshot = downloadSnapshot()
         let partials = [".download", ".crdownload", ".part", ".tmp"]
-        for (name, size) in snap {
+        for (name, size) in snapshot {
             if partials.contains(where: { name.lowercased().hasSuffix($0) }) { active = true }
             if let old = downloadBaseline[name], size > old { active = true }
         }
-        downloadBaseline = snap
+        downloadBaseline = snapshot
 
-        let source = browserReadable
-            ? "Browser events + Downloads folder"
-            : "Downloads folder (grant Full Disk Access for browser events)"
-        return (active, source)
+        return (active, browserReadable
+            ? "Browser events + folder"
+            : "Folder only (Full Disk Access for browser events)")
     }
 
     // MARK: - Persistence
@@ -312,13 +455,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func loadSession() {
         let d = UserDefaults.standard
-        if let raw = d.string(forKey: "sessionMode"), let mode = SessionMode(rawValue: raw) {
-            sessionMode = mode
-        }
+        if let raw = d.string(forKey: "sessionMode"), let mode = SessionMode(rawValue: raw) { sessionMode = mode }
         sessionEndDate = d.object(forKey: "sessionEndDate") as? Date
         sessionAppBundleID = d.string(forKey: "sessionAppBundleID")
         sessionAppName = d.string(forKey: "sessionAppName")
-
         if [.minutes, .hours, .until].contains(sessionMode),
            let end = sessionEndDate, end <= Date() {
             clearSession()
@@ -334,12 +474,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         sessionStartedAt = nil
     }
 
-    // MARK: - Explicit descriptions
+    // MARK: - Descriptions
 
     func sessionDescription() -> String {
         switch sessionMode {
-        case .indefinite:
-            return "Runs until you end it"
+        case .indefinite: return "Runs until you end it"
         case .minutes, .hours, .until:
             guard let end = sessionEndDate else { return "Timed" }
             let seconds = Int(end.timeIntervalSinceNow)
@@ -347,10 +486,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let h = seconds / 3600
             let m = (seconds % 3600) / 60
             return "Ends in \(h > 0 ? "\(h)h \(m)m" : "\(m)m")"
-        case .app:
-            return "Ends when \(sessionAppName ?? "the app") quits"
-        case .download:
-            return "Ends 30s after downloads stop"
+        case .app: return "Ends when \(sessionAppName ?? "the app") quits"
+        case .download: return "Ends 30s after downloads stop"
         }
     }
 
@@ -372,14 +509,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func menuBarTitle() -> String {
+        let style = MenuBarStyle(rawValue: prefs.menuBarStyle) ?? .countdown
         switch state {
-        case .off:
-            return "○ OFF"
-        case .lidPaused:
-            return "⏸"
+        case .off: return style == .icon ? "○" : "○ OFF"
+        case .lidPaused: return "⏸"
         case .active:
-            if [.minutes, .hours, .until].contains(sessionMode),
-               let end = sessionEndDate {
+            if style == .dot { return "● ON" }
+            if style == .icon { return "⏱" }
+            if [.minutes, .hours, .until].contains(sessionMode), let end = sessionEndDate {
                 let s = Int(end.timeIntervalSinceNow)
                 if s <= 0 { return "● 0m" }
                 let h = s / 3600
@@ -396,9 +533,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         comps.minute = 0
         comps.second = 0
         var date = Calendar.current.date(from: comps) ?? Date().addingTimeInterval(3600)
-        if date <= Date() {
-            date = Calendar.current.date(byAdding: .day, value: 1, to: date) ?? date
-        }
+        if date <= Date() { date = Calendar.current.date(byAdding: .day, value: 1, to: date) ?? date }
         return date
     }
 
@@ -406,7 +541,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func toggleAction() {
         if state == .off {
-            startSession(.indefinite, event: "Indefinite session started")
+            if prefs.defaultSession == "lastUsed" {
+                restoreLastSession()
+            } else {
+                startSession(.indefinite, event: "Indefinite session started")
+            }
         } else {
             endSession(event: "Ended by you")
         }
@@ -422,13 +561,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         updateUI()
     }
 
-    @objc func startIndefinite() {
-        startSession(.indefinite, event: "Indefinite session started")
-    }
-
-    @objc func startDownloadSession() {
-        startSession(.download, event: "Download session started")
-    }
+    @objc func startIndefinite() { startSession(.indefinite, event: "Indefinite session started") }
+    @objc func startDownloadSession() { startSession(.download, event: "Download session started") }
 
     @objc func sessionPreset(_ sender: NSPopUpButton) {
         guard let item = sender.selectedItem else { return }
@@ -460,6 +594,98 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    @objc func settingToggle(_ sender: NSButton) {
+        let on = sender.state == .on
+        switch sender.tag {
+        case 1: prefs.keepDisplay = on
+        case 2: prefs.keepSystem = on
+        case 3: prefs.keepDisk = on
+        default: return
+        }
+        reconfigureAssertions()
+    }
+
+    @objc func settingChanged(_ sender: NSPopUpButton) {
+        guard let item = sender.selectedItem else { return }
+        switch sender.tag {
+        case 10: prefs.defaultSession = item.tag == 0 ? "indefinite" : "lastUsed"
+        case 11: prefs.menuBarStyle = ["countdown", "dot", "icon"][min(max(item.tag, 0), 2)]
+        default: return
+        }
+        savePreferences()
+        logEvent("Settings updated")
+        updateUI()
+    }
+
+    @objc func chooseDownloadFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Choose"
+        panel.begin { [weak self] response in
+            guard response == .OK, let url = panel.url else { return }
+            self?.prefs.downloadFolder = url.path
+            self?.savePreferences()
+            self?.resetDownloadBaseline()
+            self?.logEvent("Download folder: \(url.lastPathComponent)")
+            self?.updateUI()
+        }
+    }
+
+    func agentIsLoaded() -> Bool {
+        !shell("/bin/launchctl print gui/\(getuid())/com.user.keepawakeapp 2>&1 | head -1").isEmpty
+    }
+
+    @objc func toggleLogin() {
+        if loginEnabled {
+            // Removing the plist prevents the next login from launching the agent.
+            // Do not bootout here: that would kill this running process.
+            try? FileManager.default.removeItem(atPath: loginAgentPath)
+            logEvent("Login auto-launch disabled")
+        } else {
+            let plist = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+            <plist version="1.0"><dict>
+            <key>Label</key><string>com.user.keepawakeapp</string>
+            <key>ProgramArguments</key><array><string>\(Bundle.main.executablePath ?? "")</string></array>
+            <key>RunAtLoad</key><true/>
+            <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
+            <key>ProcessType</key><string>Interactive</string>
+            </dict></plist>
+            """
+            try? plist.write(toFile: loginAgentPath, atomically: true, encoding: .utf8)
+            if !agentIsLoaded() {
+                _ = shell("/bin/launchctl bootstrap gui/\(getuid()) '\(loginAgentPath)' 2>&1")
+            }
+            logEvent("Login auto-launch enabled")
+        }
+        updateUI()
+    }
+
+    @objc func copyDiagnostics() {
+        var lines = [
+            "KeepAwake Diagnostics",
+            "Version: 1.4.0",
+            "State: \(state.rawValue)",
+            "Session: \(sessionMode.rawValue) — \(sessionDescription())",
+            "Last event: \(lastEvent)",
+            "Assertions: \(assertionIDs.count)/\(Self.allAssertionTypes.count)",
+            "Enabled groups: display=\(prefs.keepDisplay) system=\(prefs.keepSystem) disk=\(prefs.keepDisk)",
+            "Power: \(powerSource), Battery: \(batteryLine), Lid: \(lidIsClosed ? "closed" : "open")",
+            "Download folder: \(prefs.downloadFolder)",
+            "Download source: \(downloadSource)",
+            "Login at startup: \(loginEnabled ? "on" : "off")",
+            "",
+            "Event log (last 30):"
+        ]
+        lines += Array(eventLog.suffix(30))
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(lines.joined(separator: "\n"), forType: .string)
+        logEvent("Diagnostics copied to clipboard")
+    }
+
     // MARK: - UI
 
     func updateButton() {
@@ -484,7 +710,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func togglePopover(_ sender: Any?) {
         if NSApp.currentEvent?.type == .rightMouseUp {
             let menu = NSMenu()
-            let toggle = NSMenuItem(title: state == .off ? "Start Indefinite" : "End Session",
+            let toggle = NSMenuItem(title: state == .off ? "Start Session" : "End Session",
                                     action: #selector(toggleAction), keyEquivalent: "")
             toggle.target = self
             menu.addItem(toggle)
@@ -492,6 +718,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             refresh.target = self
             menu.addItem(refresh)
             menu.addItem(NSMenuItem.separator())
+            let diagnostics = NSMenuItem(title: "Copy Diagnostics", action: #selector(copyDiagnostics), keyEquivalent: "d")
+            diagnostics.target = self
+            menu.addItem(diagnostics)
             let quit = NSMenuItem(title: "Quit", action: #selector(quitAction), keyEquivalent: "q")
             quit.target = self
             menu.addItem(quit)
@@ -500,7 +729,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
             return
         }
-
         if popover == nil {
             let p = NSPopover()
             p.behavior = .transient
@@ -546,18 +774,27 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return stack
     }
 
-    func popup(_ items: [(String, Int)], tag: Int, width: CGFloat) -> NSPopUpButton {
+    func popup(_ items: [(String, Int)], tag: Int, width: CGFloat, action: Selector) -> NSPopUpButton {
         let button = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: width, height: 22), pullsDown: false)
         button.controlSize = .small
         button.font = .systemFont(ofSize: 11)
         button.tag = tag
         button.target = self
-        button.action = #selector(sessionPreset(_:))
+        button.action = action
         for (title, itemTag) in items {
             button.addItem(withTitle: title)
             button.lastItem?.tag = itemTag
         }
         button.widthAnchor.constraint(equalToConstant: width).isActive = true
+        return button
+    }
+
+    func checkbox(_ title: String, on: Bool, tag: Int) -> NSButton {
+        let button = NSButton(checkboxWithTitle: title, target: self, action: #selector(settingToggle(_:)))
+        button.controlSize = .small
+        button.font = .systemFont(ofSize: 11)
+        button.state = on ? .on : .off
+        button.tag = tag
         return button
     }
 
@@ -591,29 +828,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         case .lidPaused: stateColor = .systemOrange
         }
         line("KeepAwake — \(state.rawValue)", font: .boldSystemFont(ofSize: 12), color: stateColor)
-        if state != .off {
-            line("Session: \(sessionDescription())")
-        }
+        if state != .off { line("Session: \(sessionDescription())") }
         line("Last event: \(lastEvent)", color: .secondaryLabelColor)
-        line("Assertions held: \(assertionIDs.count)/\(Self.assertionTypes.count)", color: .secondaryLabelColor)
+        line("Assertions: \(assertionIDs.count)/\(Self.allAssertionTypes.count)", color: .secondaryLabelColor)
         divider()
 
         line("Start New Session:", font: .boldSystemFont(ofSize: 11), color: .secondaryLabelColor)
-
         let indefinite = NSButton(title: "Indefinitely", target: self, action: #selector(startIndefinite))
         indefinite.bezelStyle = .rounded
         indefinite.controlSize = .small
         stack.addArrangedSubview(row(label: "", control: indefinite))
-
         stack.addArrangedSubview(row(label: "Minutes", control: popup([
             ("5 min", 5), ("10 min", 10), ("15 min", 15), ("30 min", 30), ("45 min", 45), ("60 min", 60)
-        ], tag: 1, width: 100)))
+        ], tag: 1, width: 100, action: #selector(sessionPreset(_:)))))
         stack.addArrangedSubview(row(label: "Hours", control: popup([
             ("1 hr", 1), ("2 hr", 2), ("3 hr", 3), ("4 hr", 4), ("6 hr", 6), ("8 hr", 8), ("12 hr", 12)
-        ], tag: 2, width: 100)))
+        ], tag: 2, width: 100, action: #selector(sessionPreset(_:)))))
         stack.addArrangedSubview(row(label: "Other Time/Until", control: popup([
             ("5:00 PM", 1), ("11:00 PM", 2), ("Midnight", 3), ("In 30 min", 4), ("In 2 hours", 5)
-        ], tag: 3, width: 100)))
+        ], tag: 3, width: 100, action: #selector(sessionPreset(_:)))))
 
         appChoices = NSWorkspace.shared.runningApplications.compactMap { app in
             guard let name = app.localizedName,
@@ -624,7 +857,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let appItems: [(String, Int)] = appChoices.isEmpty
             ? [("No apps", -1)]
             : appChoices.prefix(20).enumerated().map { ($0.element.name, $0.offset) }
-        stack.addArrangedSubview(row(label: "While App Running", control: popup(appItems, tag: 4, width: 100)))
+        stack.addArrangedSubview(row(label: "While App Running", control: popup(appItems, tag: 4, width: 100, action: #selector(sessionPreset(_:)))))
 
         let download = NSButton(title: "Start", target: self, action: #selector(startDownloadSession))
         download.bezelStyle = .rounded
@@ -632,6 +865,29 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         stack.addArrangedSubview(row(label: "While Downloading", control: download))
         divider()
 
+        line("Settings", font: .boldSystemFont(ofSize: 11), color: .secondaryLabelColor)
+        stack.addArrangedSubview(checkbox("Keep display awake", on: prefs.keepDisplay, tag: 1))
+        stack.addArrangedSubview(checkbox("Keep system awake", on: prefs.keepSystem, tag: 2))
+        stack.addArrangedSubview(checkbox("Keep disks awake", on: prefs.keepDisk, tag: 3))
+        let folderButton = NSButton(title: (prefs.downloadFolder as NSString).lastPathComponent + "…",
+                                    target: self, action: #selector(chooseDownloadFolder))
+        folderButton.bezelStyle = .rounded
+        folderButton.controlSize = .small
+        stack.addArrangedSubview(row(label: "Download folder", control: folderButton))
+        stack.addArrangedSubview(row(label: "Default session", control: popup([
+            ("Indefinite", 0), ("Last used", 1)
+        ], tag: 10, width: 100, action: #selector(settingChanged(_:)))))
+        stack.addArrangedSubview(row(label: "Menu bar", control: popup([
+            ("Countdown", 0), ("Dot ● ON", 1), ("Icon ⏱", 2)
+        ], tag: 11, width: 100, action: #selector(settingChanged(_:)))))
+        let loginButton = NSButton(title: loginEnabled ? "On (click to disable)" : "Off (click to enable)",
+                                   target: self, action: #selector(toggleLogin))
+        loginButton.bezelStyle = .rounded
+        loginButton.controlSize = .small
+        stack.addArrangedSubview(row(label: "Login at startup", control: loginButton))
+        divider()
+
+        line("Live Info", font: .boldSystemFont(ofSize: 11), color: .secondaryLabelColor)
         line("Power: \(powerSource)")
         line("Battery: \(batteryLine)")
         line("Lid: \(lidIsClosed ? "Closed" : "Open")")
@@ -641,14 +897,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             line("Ends at: \(sessionEndTimeString())")
         }
         line("Download source: \(downloadSource)", color: .secondaryLabelColor)
-
         divider()
+
+        line("Debug Log", font: .boldSystemFont(ofSize: 11), color: .secondaryLabelColor)
+        for entry in eventLog.suffix(4) {
+            line(entry, font: .monospacedSystemFont(ofSize: 9, weight: .regular), color: .secondaryLabelColor)
+        }
+        let copyButton = NSButton(title: "Copy Diagnostics", target: self, action: #selector(copyDiagnostics))
+        copyButton.bezelStyle = .rounded
+        copyButton.controlSize = .small
+        stack.addArrangedSubview(copyButton)
+        divider()
+
         let buttons = NSStackView()
         buttons.orientation = .horizontal
         buttons.spacing = 8
         buttons.alignment = .centerY
-
-        let toggle = NSButton(title: state == .off ? "Start Indefinite" : "End Session",
+        let toggle = NSButton(title: state == .off ? "Start Session" : "End Session",
                               target: self, action: #selector(toggleAction))
         let refresh = NSButton(title: "Refresh", target: self, action: #selector(refreshAction))
         let quit = NSButton(title: "Quit", target: self, action: #selector(quitAction))
@@ -667,13 +932,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             stack.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             stack.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
-        view.widthAnchor.constraint(equalToConstant: 280).isActive = true
-
+        view.widthAnchor.constraint(equalToConstant: 300).isActive = true
         vc.view = view
         return vc
     }
 
-    // MARK: - Stats helpers
+    // MARK: - Stats
 
     func shell(_ command: String) -> String {
         let process = Process()
@@ -690,13 +954,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func refreshStats() {
         let ps = shell("pmset -g ps")
-        if ps.contains("AC Power") {
-            powerSource = "AC Power"
-        } else if ps.contains("Battery Power") {
-            powerSource = "Battery Power"
-        } else {
-            powerSource = "Unknown"
-        }
+        if ps.contains("AC Power") { powerSource = "AC Power" }
+        else if ps.contains("Battery Power") { powerSource = "Battery Power" }
+        else { powerSource = "Unknown" }
         if let match = ps.range(of: #"\d+%"#, options: .regularExpression) {
             batteryLine = String(ps[match])
         } else {
@@ -711,14 +971,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let uptime = shell("uptime")
         if let range = uptime.range(of: "up ") {
             var value = String(uptime[range.upperBound...])
-            if let end = value.range(of: " user") {
-                value = String(value[..<end.lowerBound])
-            } else if let end = value.range(of: " load") {
-                value = String(value[..<end.lowerBound])
-            }
+            if let end = value.range(of: " user") { value = String(value[..<end.lowerBound]) }
+            else if let end = value.range(of: " load") { value = String(value[..<end.lowerBound]) }
             uptimeLine = value.trimmingCharacters(in: CharacterSet(charactersIn: " ,"))
         }
-
     }
 }
 
