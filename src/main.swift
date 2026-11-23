@@ -25,6 +25,12 @@ enum MenuBarStyle: String {
     case icon
 }
 
+struct SleepEvent {
+    let time: String
+    let symbol: String
+    let reason: String
+}
+
 struct Preferences {
     var keepDisplay: Bool = true
     var keepSystem: Bool = true
@@ -69,6 +75,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var powerSource: String = "—"
     var uptimeLine: String = "—"
     var lidIsClosed: Bool = false
+    var sleepEvents: [SleepEvent] = []
+
+    // Collapsible popup sections
+    var debugExpanded: Bool = false
+    var sleepLogExpanded: Bool = true
+
+    // Live label references (updated in place — no popover rebuild)
+    weak var headerLabel: NSTextField?
+    weak var sessionLabel: NSTextField?
+    weak var lastEventLabel: NSTextField?
+    weak var assertionsLabel: NSTextField?
+    var sleepSectionRows: [NSView] = []
+    var debugSectionRows: [NSView] = []
 
     // Assertion IDs by type
     var assertionIDs: [String: IOPMAssertionID] = [:]
@@ -108,20 +127,27 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         loadPreferences()
 
         loadSession() // may clear an expired session and reset userWantsOn
+        refreshStats()
         let defaults = UserDefaults.standard
         let savedOn = (defaults.object(forKey: "userWantsOn") as? Bool) ?? true
         let closed = isLidClosed()
-        state = savedOn ? (closed ? .lidPaused : .active) : .off
+        state = savedOn ? ((closed && powerSource != "AC Power") ? .lidPaused : .active) : .off
         if state != .off { sessionStartedAt = Date() }
         if state == .active { acquireAssertions() }
         if sessionMode == .download { resetDownloadBaseline() }
 
-        logEvent("Launched (v1.4.0)")
-        refreshStats()
+        logEvent("Launched (v1.4.2)")
         updateUI()
 
         monitorTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             self?.tick()
+        }
+
+        if CommandLine.arguments.contains("--demo") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                NSApp.activate(ignoringOtherApps: true)
+                self?.togglePopover(nil)
+            }
         }
     }
 
@@ -254,7 +280,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         prefs.lastAppName = appName
         savePreferences()
 
-        transition(to: isLidClosed() ? .lidPaused : .active, event: event)
+        let lidClosed = isLidClosed()
+        let target: AppState = (lidClosed && powerSource != "AC Power") ? .lidPaused : .active
+        transition(to: target, event: event)
     }
 
     func endSession(event: String) {
@@ -337,9 +365,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func checkLid() {
+        let wasClosed = lidIsClosed
         let closed = isLidClosed()
-        if closed && state == .active {
-            transition(to: .lidPaused, event: "Lid closed — assertions paused")
+
+        if closed != wasClosed {
+            logEvent(closed ? "Lid closed (\(powerSource))" : "Lid opened")
+        }
+
+        // On AC power we intentionally ignore the lid and keep the Mac awake
+        // (clamshell mode) so tasks keep running. On battery we pause.
+        if closed && state == .active && powerSource != "AC Power" {
+            transition(to: .lidPaused, event: "Lid closed on battery — assertions paused")
         } else if !closed && state == .lidPaused {
             transition(to: .active, event: "Lid opened — assertions resumed")
         }
@@ -558,6 +594,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func refreshAction() {
         refreshStats()
         updateUI()
+        rebuildPopover() // only on explicit Refresh click
     }
 
     @objc func startIndefinite() { startSession(.indefinite, event: "Indefinite session started") }
@@ -599,9 +636,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         case 1: prefs.keepDisplay = on
         case 2: prefs.keepSystem = on
         case 3: prefs.keepDisk = on
+        case 4: sleepLogExpanded = on
+        case 5: debugExpanded = on
         default: return
         }
-        reconfigureAssertions()
+        if sender.tag <= 3 {
+            reconfigureAssertions()
+        } else if sender.tag == 4 {
+            sleepSectionRows.forEach { $0.isHidden = !on }
+        } else if sender.tag == 5 {
+            debugSectionRows.forEach { $0.isHidden = !on }
+        }
     }
 
     @objc func settingChanged(_ sender: NSPopUpButton) {
@@ -666,7 +711,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func copyDiagnostics() {
         var lines = [
             "KeepAwake Diagnostics",
-            "Version: 1.4.0",
+            "Version: 1.4.2",
             "State: \(state.rawValue)",
             "Session: \(sessionMode.rawValue) — \(sessionDescription())",
             "Last event: \(lastEvent)",
@@ -687,23 +732,35 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - UI
 
+    func stateColor() -> NSColor {
+        switch state {
+        case .off: return .secondaryLabelColor
+        case .active: return .systemGreen
+        case .lidPaused: return .systemOrange
+        }
+    }
+
     func updateButton() {
         guard let button = statusItem.button else { return }
-        let color: NSColor
-        switch state {
-        case .off: color = .secondaryLabelColor
-        case .active: color = .systemGreen
-        case .lidPaused: color = .systemOrange
-        }
         button.attributedTitle = NSAttributedString(string: menuBarTitle(), attributes: [
-            .foregroundColor: color,
+            .foregroundColor: stateColor(),
             .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .semibold)
         ])
+        updateLabels()
+    }
+
+    /// Updates the visible popover labels in place. Never replaces the content
+    /// view controller — that is what caused the popup to flash on every click.
+    func updateLabels() {
+        headerLabel?.stringValue = "KeepAwake — \(state.rawValue)"
+        headerLabel?.textColor = stateColor()
+        sessionLabel?.stringValue = state == .off ? "" : "Session: \(sessionDescription())"
+        lastEventLabel?.stringValue = "Last event: \(lastEvent)"
+        assertionsLabel?.stringValue = "Assertions: \(assertionIDs.count)/\(Self.allAssertionTypes.count)"
     }
 
     func updateUI() {
         updateButton()
-        rebuildPopover()
     }
 
     @objc func togglePopover(_ sender: Any?) {
@@ -806,12 +863,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         stack.spacing = 4
         stack.edgeInsets = NSEdgeInsets(top: 10, left: 12, bottom: 10, right: 12)
 
-        func line(_ text: String, font: NSFont = .systemFont(ofSize: 11), color: NSColor = .labelColor) {
+        @discardableResult
+        func line(_ text: String, font: NSFont = .systemFont(ofSize: 11), color: NSColor = .labelColor) -> NSTextField {
             let label = NSTextField(labelWithString: text)
             label.font = font
             label.textColor = color
             label.lineBreakMode = .byTruncatingTail
             stack.addArrangedSubview(label)
+            return label
         }
         func divider() {
             let box = NSBox()
@@ -819,17 +878,29 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             stack.addArrangedSubview(box)
             box.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -24).isActive = true
         }
-
-        let stateColor: NSColor
-        switch state {
-        case .off: stateColor = .secondaryLabelColor
-        case .active: stateColor = .systemGreen
-        case .lidPaused: stateColor = .systemOrange
+        @discardableResult
+        func sleepEventRow(_ event: SleepEvent) -> NSView {
+            let lineStack = NSStackView()
+            lineStack.orientation = .horizontal
+            lineStack.alignment = .firstBaseline
+            lineStack.spacing = 5
+            let time = NSTextField(labelWithString: event.time)
+            time.font = .monospacedSystemFont(ofSize: 9, weight: .regular)
+            time.textColor = .secondaryLabelColor
+            time.widthAnchor.constraint(equalToConstant: 88).isActive = true
+            let detail = NSTextField(labelWithString: "\(event.symbol) \(event.reason)")
+            detail.font = .systemFont(ofSize: 10)
+            detail.lineBreakMode = .byTruncatingTail
+            lineStack.addArrangedSubview(time)
+            lineStack.addArrangedSubview(detail)
+            stack.addArrangedSubview(lineStack)
+            return lineStack
         }
-        line("KeepAwake — \(state.rawValue)", font: .boldSystemFont(ofSize: 12), color: stateColor)
-        if state != .off { line("Session: \(sessionDescription())") }
-        line("Last event: \(lastEvent)", color: .secondaryLabelColor)
-        line("Assertions: \(assertionIDs.count)/\(Self.allAssertionTypes.count)", color: .secondaryLabelColor)
+
+        headerLabel = line("KeepAwake — \(state.rawValue)", font: .boldSystemFont(ofSize: 12), color: stateColor())
+        sessionLabel = line(state == .off ? "" : "Session: \(sessionDescription())")
+        lastEventLabel = line("Last event: \(lastEvent)", color: .secondaryLabelColor)
+        assertionsLabel = line("Assertions: \(assertionIDs.count)/\(Self.allAssertionTypes.count)", color: .secondaryLabelColor)
         divider()
 
         line("Start New Session:", font: .boldSystemFont(ofSize: 11), color: .secondaryLabelColor)
@@ -898,14 +969,29 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         line("Download source: \(downloadSource)", color: .secondaryLabelColor)
         divider()
 
-        line("Debug Log", font: .boldSystemFont(ofSize: 11), color: .secondaryLabelColor)
-        for entry in eventLog.suffix(4) {
-            line(entry, font: .monospacedSystemFont(ofSize: 9, weight: .regular), color: .secondaryLabelColor)
+        // Sleep/Wake log (collapsible)
+        sleepSectionRows = []
+        debugSectionRows = []
+        stack.addArrangedSubview(checkbox("Sleep/Wake Log (\(sleepEvents.count))",
+                                          on: sleepLogExpanded, tag: 4))
+        if sleepEvents.isEmpty {
+            sleepSectionRows.append(line("  No recent sleep/wake events", font: .systemFont(ofSize: 10), color: .secondaryLabelColor))
+        } else {
+            for event in sleepEvents { sleepSectionRows.append(sleepEventRow(event)) }
+        }
+        sleepSectionRows.forEach { $0.isHidden = !sleepLogExpanded }
+
+        // Debug log (collapsible)
+        stack.addArrangedSubview(checkbox("Debug Log", on: debugExpanded, tag: 5))
+        for entry in eventLog.suffix(5) {
+            debugSectionRows.append(line("  \(entry)", font: .monospacedSystemFont(ofSize: 9, weight: .regular), color: .secondaryLabelColor))
         }
         let copyButton = NSButton(title: "Copy Diagnostics", target: self, action: #selector(copyDiagnostics))
         copyButton.bezelStyle = .rounded
         copyButton.controlSize = .small
         stack.addArrangedSubview(copyButton)
+        debugSectionRows.append(copyButton)
+        debugSectionRows.forEach { $0.isHidden = !debugExpanded }
         divider()
 
         let buttons = NSStackView()
@@ -974,6 +1060,47 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             else if let end = value.range(of: " load") { value = String(value[..<end.lowerBound]) }
             uptimeLine = value.trimmingCharacters(in: CharacterSet(charactersIn: " ,"))
         }
+
+        // Sleep/wake history from the power management ASL logs (today + yesterday).
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy.MM.dd"
+        let today = formatter.string(from: Date())
+        let yesterday = formatter.string(from: Date().addingTimeInterval(-86400))
+        let filter = "grep -iE 'Entering Sleep|Wake from|DarkWake'"
+        let command = "syslog -f /var/log/powermanagement/\(yesterday).asl 2>/dev/null | \(filter); syslog -f /var/log/powermanagement/\(today).asl 2>/dev/null | \(filter)"
+        let found = shell(command).components(separatedBy: "\n").compactMap { parseSleepEvent($0) }
+        sleepEvents = Array(found.suffix(5))
+    }
+
+    func parseSleepEvent(_ line: String) -> SleepEvent? {
+        let text = line.trimmingCharacters(in: .whitespaces)
+        guard !text.isEmpty else { return nil }
+        let parts = text.split(separator: " ", maxSplits: 4, omittingEmptySubsequences: true)
+        guard parts.count >= 3 else { return nil }
+        let time = "\(parts[0]) \(parts[1]) \(parts[2])"
+
+        let symbol: String
+        var reason: String
+        if text.contains("Entering Sleep") {
+            symbol = "↓"
+            reason = "Sleep"
+            if let start = text.range(of: "due to '") {
+                let rest = text[start.upperBound...]
+                if let end = rest.range(of: "'") { reason = String(rest[..<end.lowerBound]) }
+            }
+        } else if text.contains("DarkWake") {
+            symbol = "↕"
+            reason = "Dark wake"
+            if let start = text.range(of: "due to ") { reason = String(text[start.upperBound...]) }
+        } else if text.contains("Wake from") {
+            symbol = "↑"
+            reason = "Wake"
+            if let start = text.range(of: "due to ") { reason = String(text[start.upperBound...]) }
+        } else {
+            return nil
+        }
+        if let end = reason.range(of: " Using") { reason = String(reason[..<end.lowerBound]) }
+        return SleepEvent(time: time, symbol: symbol, reason: reason)
     }
 }
 

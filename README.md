@@ -27,7 +27,7 @@ A tiny, native macOS menu-bar app that keeps your Mac awake — **only when you 
 |---|---|
 | Assertions held | `PreventUserIdleDisplaySleep`, `PreventUserIdleSystemSleep`, `PreventSystemSleep`, `PreventDiskIdle`, `UserIsActive` |
 | Session modes | **Indefinitely**, **Minutes**, **Hours**, **Other Time/Until**, **While App is Running**, **While File is Downloading** |
-| Lid-close handling | Auto-releases assertions on close, re-engages on open |
+| Lid-close handling | On AC: keeps assertions (clamshell mode, tasks keep running). On battery: pauses assertions and resumes on open |
 | Live info shown | State, session condition + exit time, last event, assertion count, power source, battery %, lid state, uptime, session age, download source |
 | Auto-launch | `~/Library/LaunchAgents/com.user.keepawakeapp.plist` (`RunAtLoad`) |
 | Binary size | ~156 KB (`-Osize`, dead-strip, stripped) |
@@ -80,7 +80,8 @@ The popup includes a **Settings** section:
 - **Default session** — what "Turn On" starts: Indefinite or Last used (with its previous duration/app).
 - **Menu bar** — Countdown (`● 14m`), Dot (`● ON`), or Icon (`⏱`).
 - **Login at startup** — enable/disable the LaunchAgent from the popup.
-- **Debug Log** — last four events, plus a **Copy Diagnostics** button that puts version, state, session info, assertion groups, power, download source and the last 30 log lines on the clipboard.
+- **Sleep/Wake Log** and **Debug Log** — collapsible checkbox sections. Toggling them only hides/shows rows in place; the popup never rebuilds on a click, so it does not flash.
+- **Copy Diagnostics** button puts version, state, session info, assertion groups, power, download source and the last 30 log lines on the clipboard.
 
 Changing assertion groups while a session is active releases and re-acquires only the enabled assertions.
 
