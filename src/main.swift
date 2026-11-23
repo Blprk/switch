@@ -2,6 +2,15 @@ import Cocoa
 import IOKit
 import IOKit.pwr_mgt
 
+enum SessionMode: String {
+    case indefinite
+    case minutes
+    case hours
+    case until
+    case app
+    case download
+}
+
 class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
     var assertionIDs: [IOPMAssertionID] = []
@@ -9,6 +18,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var userWantsOn: Bool = true
     var pausedByLid: Bool = false
     var effectiveOn: Bool { userWantsOn && !pausedByLid }
+
+    // Session state
+    var sessionMode: SessionMode = .indefinite
+    var sessionEndDate: Date?
+    var sessionAppBundleID: String?
+    var sessionAppName: String?
+    var appChoices: [(name: String, bundleID: String)] = []
+    var downloadBaseline: [String: Int64] = [:]
+    var lastDownloadActivity: Date = Date()
 
     var awakeSince: Date?
     var lastSleepLine: String = "—"
@@ -20,10 +38,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var uptimeLine: String = "—"
 
     var popover: NSPopover?
-    var lidTimer: Timer?
+    var monitorTimer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Single-instance guard
         let running = NSRunningApplication.runningApplications(withBundleIdentifier: "com.user.keepawakeapp")
         if running.count > 1 {
             NSApp.terminate(nil)
@@ -41,8 +58,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         let saved = UserDefaults.standard.object(forKey: "userWantsOn")
         userWantsOn = (saved as? Bool) ?? true
+        loadSession()
 
-        // initial lid state
         pausedByLid = isLidClosed()
         if effectiveOn { startCaffeinate() }
 
@@ -55,9 +72,72 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        lidTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+        monitorTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             self?.checkLid()
+            self?.checkSession()
         }
+    }
+
+    // MARK: - Session persistence
+    func saveSession() {
+        let d = UserDefaults.standard
+        d.set(sessionMode.rawValue, forKey: "sessionMode")
+        d.set(sessionEndDate, forKey: "sessionEndDate")
+        d.set(sessionAppBundleID, forKey: "sessionAppBundleID")
+        d.set(sessionAppName, forKey: "sessionAppName")
+    }
+
+    func loadSession() {
+        let d = UserDefaults.standard
+        if let raw = d.string(forKey: "sessionMode"), let m = SessionMode(rawValue: raw) {
+            sessionMode = m
+        }
+        sessionEndDate = d.object(forKey: "sessionEndDate") as? Date
+        sessionAppBundleID = d.string(forKey: "sessionAppBundleID")
+        sessionAppName = d.string(forKey: "sessionAppName")
+        // Expired timed sessions should not auto-resume as "on"
+        if [.minutes, .hours, .until].contains(sessionMode),
+           let end = sessionEndDate, end <= Date() {
+            userWantsOn = false
+            UserDefaults.standard.set(false, forKey: "userWantsOn")
+            clearSession()
+        }
+        if sessionMode == .download { resetDownloadBaseline() }
+    }
+
+    func clearSession() {
+        let d = UserDefaults.standard
+        d.removeObject(forKey: "sessionMode")
+        d.removeObject(forKey: "sessionEndDate")
+        d.removeObject(forKey: "sessionAppBundleID")
+        d.removeObject(forKey: "sessionAppName")
+    }
+
+    func startSession(_ mode: SessionMode, endDate: Date? = nil, appBundleID: String? = nil, appName: String? = nil) {
+        sessionMode = mode
+        sessionEndDate = endDate
+        sessionAppBundleID = appBundleID
+        sessionAppName = appName
+        if mode == .download { resetDownloadBaseline() }
+        userWantsOn = true
+        UserDefaults.standard.set(true, forKey: "userWantsOn")
+        saveSession()
+        if !pausedByLid { startCaffeinate() }
+        updateButton()
+        rebuildPopover()
+    }
+
+    func endSession() {
+        sessionMode = .indefinite
+        sessionEndDate = nil
+        sessionAppBundleID = nil
+        sessionAppName = nil
+        userWantsOn = false
+        UserDefaults.standard.set(false, forKey: "userWantsOn")
+        clearSession()
+        stopCaffeinate()
+        updateButton()
+        rebuildPopover()
     }
 
     // MARK: - Lid handling
@@ -86,6 +166,98 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    // MARK: - Session monitoring
+    func checkSession() {
+        guard userWantsOn else { return }
+        switch sessionMode {
+        case .indefinite:
+            return
+        case .minutes, .hours, .until:
+            if let end = sessionEndDate, Date() >= end {
+                endSession()
+            }
+        case .app:
+            guard let bid = sessionAppBundleID else { endSession(); return }
+            let running = NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == bid }
+            if !running { endSession() }
+        case .download:
+            if downloadIsActive() {
+                lastDownloadActivity = Date()
+            } else if Date().timeIntervalSince(lastDownloadActivity) > 30 {
+                endSession()
+            }
+        }
+    }
+
+    func downloadSnapshot() -> [String: Int64] {
+        let fm = FileManager.default
+        let dir = NSString(string: "~/Downloads").expandingTildeInPath
+        var result: [String: Int64] = [:]
+        guard let files = try? fm.contentsOfDirectory(atPath: dir) else { return result }
+        for f in files {
+            let path = (dir as NSString).appendingPathComponent(f)
+            guard let attrs = try? fm.attributesOfItem(atPath: path),
+                  let size = attrs[.size] as? NSNumber else { continue }
+            result[f] = size.int64Value
+        }
+        return result
+    }
+
+    func resetDownloadBaseline() {
+        downloadBaseline = downloadSnapshot()
+        lastDownloadActivity = Date()
+    }
+
+    func downloadIsActive() -> Bool {
+        let snap = downloadSnapshot()
+        var active = false
+        let partials = [".download", ".crdownload", ".part", ".tmp"]
+        for (name, size) in snap {
+            if partials.contains(where: { name.lowercased().hasSuffix($0) }) {
+                active = true
+                break
+            }
+            if let old = downloadBaseline[name], size > old {
+                active = true
+                break
+            }
+        }
+        downloadBaseline = snap
+        return active
+    }
+
+    func nextTime(hour: Int, minute: Int = 0) -> Date {
+        var comps = Calendar.current.dateComponents([.year, .month, .day], from: Date())
+        comps.hour = hour
+        comps.minute = minute
+        comps.second = 0
+        var d = Calendar.current.date(from: comps) ?? Date().addingTimeInterval(3600)
+        if d <= Date() {
+            d = Calendar.current.date(byAdding: .day, value: 1, to: d) ?? d
+        }
+        return d
+    }
+
+    func sessionDescription() -> String {
+        guard userWantsOn else { return "No active session" }
+        switch sessionMode {
+        case .indefinite:
+            return "Indefinitely"
+        case .minutes, .hours, .until:
+            guard let end = sessionEndDate else { return "Timed" }
+            let secs = Int(end.timeIntervalSinceNow)
+            if secs <= 0 { return "Ending…" }
+            let h = secs / 3600
+            let m = (secs % 3600) / 60
+            let left = h > 0 ? "\(h)h \(m)m" : "\(m)m"
+            return "\(left) left"
+        case .app:
+            return "While \(sessionAppName ?? "app") runs"
+        case .download:
+            return "While downloading"
+        }
+    }
+
     // MARK: - Caffeinate (IOPM assertions)
     func startCaffeinate() {
         guard assertionIDs.isEmpty else { return }
@@ -100,20 +272,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func stopCaffeinate() {
-        for aid in assertionIDs {
-            IOPMAssertionRelease(aid)
-        }
+        for aid in assertionIDs { IOPMAssertionRelease(aid) }
         assertionIDs.removeAll()
     }
 
     @objc func toggleAction() {
-        userWantsOn.toggle()
-        UserDefaults.standard.set(userWantsOn, forKey: "userWantsOn")
-        if !pausedByLid {
-            if userWantsOn { startCaffeinate() } else { stopCaffeinate() }
-        }
-        updateButton()
-        rebuildPopover()
+        if userWantsOn { endSession() } else { startSession(.indefinite) }
     }
 
     @objc func quitAction() {
@@ -127,12 +291,49 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         rebuildPopover()
     }
 
+    // MARK: - Session UI actions
+    @objc func startIndefinite() {
+        startSession(.indefinite)
+    }
+
+    @objc func startDownloadSession() {
+        startSession(.download)
+    }
+
+    @objc func sessionPreset(_ sender: NSPopUpButton) {
+        guard let item = sender.selectedItem else { return }
+        switch sender.tag {
+        case 1:
+            startSession(.minutes, endDate: Date().addingTimeInterval(Double(item.tag) * 60))
+        case 2:
+            startSession(.hours, endDate: Date().addingTimeInterval(Double(item.tag) * 3600))
+        case 3:
+            let end: Date
+            switch item.tag {
+            case 1: end = nextTime(hour: 17)
+            case 2: end = nextTime(hour: 23)
+            case 3: end = nextTime(hour: 0)
+            case 4: end = Date().addingTimeInterval(30 * 60)
+            case 5: end = Date().addingTimeInterval(2 * 3600)
+            default: end = Date().addingTimeInterval(3600)
+            }
+            startSession(.until, endDate: end)
+        case 4:
+            let idx = item.tag
+            if idx >= 0 && idx < appChoices.count {
+                startSession(.app, appBundleID: appChoices[idx].bundleID, appName: appChoices[idx].name)
+            }
+        default:
+            break
+        }
+    }
+
     // MARK: - Popover
     @objc func togglePopover(_ sender: Any?) {
         let event = NSApp.currentEvent
         if event?.type == .rightMouseUp {
             let menu = NSMenu()
-            let toggleItem = NSMenuItem(title: userWantsOn ? "Turn Off" : "Turn On", action: #selector(toggleAction), keyEquivalent: "")
+            let toggleItem = NSMenuItem(title: userWantsOn ? "End Session" : "Start Indefinite", action: #selector(toggleAction), keyEquivalent: "")
             toggleItem.target = self
             menu.addItem(toggleItem)
             let refreshItem = NSMenuItem(title: "Refresh", action: #selector(refreshAction), keyEquivalent: "r")
@@ -175,6 +376,35 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         popover.contentSize = vc.view.fittingSize
     }
 
+    func sessionRow(label: String, control: NSView) -> NSStackView {
+        let row = NSStackView()
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 6
+        let lbl = NSTextField(labelWithString: label)
+        lbl.font = NSFont.systemFont(ofSize: 11)
+        lbl.textColor = .labelColor
+        lbl.widthAnchor.constraint(equalToConstant: 118).isActive = true
+        row.addArrangedSubview(lbl)
+        row.addArrangedSubview(control)
+        return row
+    }
+
+    func popup(_ items: [(String, Int)], tag: Int, width: CGFloat) -> NSPopUpButton {
+        let p = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: width, height: 22), pullsDown: false)
+        p.controlSize = .small
+        p.font = NSFont.systemFont(ofSize: 11)
+        p.tag = tag
+        p.target = self
+        p.action = #selector(sessionPreset(_:))
+        for (title, itemTag) in items {
+            p.addItem(withTitle: title)
+            p.lastItem?.tag = itemTag
+        }
+        p.widthAnchor.constraint(equalToConstant: width).isActive = true
+        return p
+    }
+
     func makePopoverContent() -> NSViewController {
         let vc = NSViewController()
         let view = NSView()
@@ -183,14 +413,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let stack = NSStackView()
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 3
+        stack.spacing = 4
         stack.edgeInsets = NSEdgeInsets(top: 10, left: 12, bottom: 10, right: 12)
 
         let statusText: String
         if pausedByLid {
             statusText = "PAUSED (lid closed)"
         } else {
-            statusText = userWantsOn ? "ACTIVE" : "INACTIVE"
+            statusText = userWantsOn ? "ACTIVE — \(sessionDescription())" : "INACTIVE"
         }
         let header = NSTextField(labelWithString: "KeepAwake — \(statusText)")
         header.font = NSFont.boldSystemFont(ofSize: 12)
@@ -199,20 +429,64 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             header.textColor = userWantsOn ? .systemGreen : .secondaryLabelColor
         }
+        header.lineBreakMode = .byTruncatingTail
         stack.addArrangedSubview(header)
 
-        let sep1 = NSBox()
-        sep1.boxType = .separator
-        stack.addArrangedSubview(sep1)
-        sep1.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -24).isActive = true
+        func separator() {
+            let box = NSBox()
+            box.boxType = .separator
+            stack.addArrangedSubview(box)
+            box.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -24).isActive = true
+        }
 
+        separator()
+
+        // Session section
+        let sessHeader = NSTextField(labelWithString: "Start New Session:")
+        sessHeader.font = NSFont.boldSystemFont(ofSize: 11)
+        sessHeader.textColor = .secondaryLabelColor
+        stack.addArrangedSubview(sessHeader)
+
+        let indefBtn = NSButton(title: "Indefinitely", target: self, action: #selector(startIndefinite))
+        indefBtn.bezelStyle = .rounded
+        indefBtn.controlSize = .small
+        stack.addArrangedSubview(sessionRow(label: "", control: indefBtn))
+
+        stack.addArrangedSubview(sessionRow(label: "Minutes", control: popup([
+            ("5 min", 5), ("10 min", 10), ("15 min", 15), ("30 min", 30), ("45 min", 45), ("60 min", 60)
+        ], tag: 1, width: 100)))
+
+        stack.addArrangedSubview(sessionRow(label: "Hours", control: popup([
+            ("1 hr", 1), ("2 hr", 2), ("3 hr", 3), ("4 hr", 4), ("6 hr", 6), ("8 hr", 8), ("12 hr", 12)
+        ], tag: 2, width: 100)))
+
+        stack.addArrangedSubview(sessionRow(label: "Other Time/Until", control: popup([
+            ("5:00 PM", 1), ("11:00 PM", 2), ("Midnight", 3), ("In 30 min", 4), ("In 2 hours", 5)
+        ], tag: 3, width: 100)))
+
+        appChoices = NSWorkspace.shared.runningApplications
+            .filter { $0.bundleIdentifier != nil && $0.bundleIdentifier != "com.user.keepawakeapp" && $0.localizedName != nil }
+            .sorted { ($0.localizedName ?? "") < ($1.localizedName ?? "") }
+            .map { ($0.localizedName!, $0.bundleIdentifier!) }
+        let appItems: [(String, Int)] = appChoices.isEmpty
+            ? [("No apps", -1)]
+            : appChoices.prefix(20).enumerated().map { ($0.element.name, $0.offset) }
+        stack.addArrangedSubview(sessionRow(label: "While App Running", control: popup(appItems, tag: 4, width: 100)))
+
+        let dlBtn = NSButton(title: "Start", target: self, action: #selector(startDownloadSession))
+        dlBtn.bezelStyle = .rounded
+        dlBtn.controlSize = .small
+        stack.addArrangedSubview(sessionRow(label: "While Downloading", control: dlBtn))
+
+        separator()
+
+        // Stats
         let stats: [String] = [
             "Power: \(powerSource)",
             "Battery: \(batteryLine)",
             "Uptime: \(uptimeLine)",
             "Awake: \(awakeDurationString())",
             "Last sleep: \(lastSleepLine)",
-            "Last wake: \(lastWakeLine)",
             "Sleeps (recent): \(sleepCount)"
         ]
         for line in stats {
@@ -224,16 +498,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         if !recentEvents.isEmpty {
-            let sep2 = NSBox()
-            sep2.boxType = .separator
-            stack.addArrangedSubview(sep2)
-            sep2.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -24).isActive = true
-
+            separator()
             let recHeader = NSTextField(labelWithString: "Recent Sleep/Wake")
             recHeader.font = NSFont.boldSystemFont(ofSize: 11)
             recHeader.textColor = .secondaryLabelColor
             stack.addArrangedSubview(recHeader)
-
             for ev in recentEvents {
                 let lbl = NSTextField(labelWithString: ev)
                 lbl.font = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
@@ -243,18 +512,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        let sep3 = NSBox()
-        sep3.boxType = .separator
-        stack.addArrangedSubview(sep3)
-        sep3.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -24).isActive = true
+        separator()
 
         let btnRow = NSStackView()
         btnRow.orientation = .horizontal
         btnRow.spacing = 8
         btnRow.alignment = .centerY
 
-        let toggleTitle = userWantsOn ? "Turn Off" : "Turn On"
-        let toggleBtn = NSButton(title: toggleTitle, target: self, action: #selector(toggleAction))
+        let toggleBtn = NSButton(title: userWantsOn ? "End Session" : "Turn On", target: self, action: #selector(toggleAction))
         toggleBtn.bezelStyle = .rounded
         toggleBtn.controlSize = .small
         btnRow.addArrangedSubview(toggleBtn)
@@ -280,7 +545,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             stack.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
 
-        view.widthAnchor.constraint(equalToConstant: 260).isActive = true
+        view.widthAnchor.constraint(equalToConstant: 280).isActive = true
 
         vc.view = view
         return vc
@@ -432,7 +697,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        lidTimer?.invalidate()
+        monitorTimer?.invalidate()
         stopCaffeinate()
     }
 }

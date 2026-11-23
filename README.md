@@ -26,11 +26,26 @@ A tiny, native macOS menu-bar app that keeps your Mac awake — **only when you 
 | Feature | Detail |
 |---|---|
 | Assertions held | `PreventUserIdleDisplaySleep`, `PreventUserIdleSystemSleep`, `PreventSystemSleep`, `PreventDiskIdle`, `UserIsActive` |
+| Session modes | **Indefinitely**, **Minutes**, **Hours**, **Other Time/Until**, **While App is Running**, **While File is Downloading** |
 | Lid-close handling | Auto-releases assertions on close, re-engages on open |
 | Stats shown | Power source, battery %, uptime, awake duration, last sleep/wake, sleep count, recent events |
 | Auto-launch | `~/Library/LaunchAgents/com.user.keepawakeapp.plist` (`RunAtLoad`) |
-| Binary size | ~98 KB (`-Osize`, dead-strip, stripped) |
-| Memory | ~a few MB; ~0% CPU (2s lid poll via `ioreg`) |
+| Binary size | ~140 KB (`-Osize`, dead-strip, stripped) |
+| Memory | ~a few MB; ~0% CPU (2s lid/session check via `ioreg`) |
+
+## Session modes
+
+![Session start options](assets/screenshot-sessions.png)
+
+Click the menu-bar icon to open the popup. Under **Start New Session:** choose:
+
+- **Indefinitely** — stays on until you end it (default)
+- **Minutes** / **Hours** — preset durations (5–60 min, 1–12 hr); ends automatically
+- **Other Time/Until** — until 5 PM, 11 PM, midnight, in 30 min, or in 2 hours
+- **While App is Running** — pick a running app; session ends when it quits
+- **While File is Downloading** — watches `~/Downloads` for file growth / partial-download extensions and ends ~30 s after downloads stop
+
+Active sessions persist in `UserDefaults` and resume at login (expired timed sessions do not). The menu-bar icon shows `● ON` / `⏸` (lid paused) / `○ OFF`, and the popup header shows the remaining time or session condition.
 
 ## Install
 
