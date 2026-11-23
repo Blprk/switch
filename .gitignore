@@ -1,0 +1,17 @@
+# macOS
+.DS_Store
+*.app
+*.dSYM
+
+# Build artifacts
+build/
+*.o
+*.swiftmodule
+
+# Xcode
+xcuserdata/
+*.xcworkspace
+*.xcodeproj
+
+# Logs
+/tmp/keepawake.log

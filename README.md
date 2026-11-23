@@ -1,0 +1,120 @@
+# KeepAwake
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Platform: macOS](https://img.shields.io/badge/Platform-macOS%2011%2B-lightgrey.svg)](https://www.apple.com/macos/)
+[![Swift](https://img.shields.io/badge/Swift-5.9%2B-orange.svg)](https://swift.org)
+[![GitHub release](https://img.shields.io/github/v/release/Blprk/KeepAwake)](https://github.com/Blprk/KeepAwake/releases)
+[![Stars](https://img.shields.io/github/stars/Blprk/KeepAwake?style=social)](https://github.com/Blprk/KeepAwake/stargazers)
+
+A tiny, native macOS menu-bar app that keeps your Mac awake — **only when you want it to**, and **only while the lid is open**. No `caffeinate` subprocess, no sudo, no bloat. ~98 KB binary.
+
+![KeepAwake menu bar popup](assets/screenshot.png)
+
+## Why
+
+`caffeinate` works, but it dies when its shell session ends, it can't tell you its state, and it keeps fighting sleep even with the lid closed (hello, hot backpack). KeepAwake fixes all three:
+
+- 🟢 **Clear on/off state** in the menu bar — `● ON` / `○ OFF` / `⏸` (paused, lid closed)
+- 🔒 **Native IOPM assertions** held directly by the app — no subprocess, no `sudo`
+- 📱 **Auto-pauses when the lid closes**, auto-resumes when you reopen
+- 📊 **Live stats popup** — power source, battery, uptime, awake time, recent sleep/wake events
+- 🚀 **Launches at login** via a LaunchAgent
+- 🧹 **Fully reversible** — one command removes everything
+
+## Features
+
+| Feature | Detail |
+|---|---|
+| Assertions held | `PreventUserIdleDisplaySleep`, `PreventUserIdleSystemSleep`, `PreventSystemSleep`, `PreventDiskIdle`, `UserIsActive` |
+| Lid-close handling | Auto-releases assertions on close, re-engages on open |
+| Stats shown | Power source, battery %, uptime, awake duration, last sleep/wake, sleep count, recent events |
+| Auto-launch | `~/Library/LaunchAgents/com.user.keepawakeapp.plist` (`RunAtLoad`) |
+| Binary size | ~98 KB (`-Osize`, dead-strip, stripped) |
+| Memory | ~a few MB; ~0% CPU (2s lid poll via `ioreg`) |
+
+## Install
+
+### From source
+
+```bash
+git clone https://github.com/Blprk/KeepAwake.git
+cd KeepAwake
+./scripts/build.sh
+```
+
+The app is installed to `~/Applications/KeepAwake.app` and registered to launch at login. The menu-bar icon appears immediately.
+
+### Manual (no build script)
+
+```bash
+swiftc -Osize -o ~/Applications/KeepAwake.app/Contents/MacOS/KeepAwake src/main.swift \
+  -framework Cocoa -framework IOKit -Xlinker -dead_strip
+strip -x ~/Applications/KeepAwake.app/Contents/MacOS/KeepAwake
+# copy Info.plist into the bundle, then:
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.user.keepawakeapp.plist
+```
+
+## Usage
+
+- **Left-click** the menu-bar icon → compact popup with stats + buttons
+- **Right-click** → quick menu (Turn On/Off, Refresh, Quit)
+- **Turn Off** → releases all assertions; Mac can sleep normally
+- **Turn On** → re-engages assertions
+- Close the lid → auto-pauses (icon `⏸`); reopen → auto-resumes (if you had it on)
+
+### Verify it's working
+
+```bash
+pmset -g assertions | grep KeepAwake
+```
+
+You should see 5 lines owned by the app. To confirm sleep prevention, leave the Mac idle for 5 minutes with the lid open — it should not sleep:
+
+```bash
+pmset -g log | grep -i "Entering Sleep" | tail -3
+```
+
+## Uninstall
+
+```bash
+launchctl bootout gui/$(id -u)/com.user.keepawakeapp
+rm ~/Library/LaunchAgents/com.user.keepawakeapp.plist
+rm -rf ~/Applications/KeepAwake.app
+```
+
+No sudo, no system files touched.
+
+## Safety
+
+- **No `sudo`, no system files.** Everything lives in your home directory.
+- **Assertions are OS-managed.** If the app crashes or is force-quit, the kernel releases them — your Mac can never get stuck awake.
+- **User-initiated sleep still works** (Apple menu → Sleep, closing the lid on battery, low-battery/thermal emergency sleep).
+- **Auto-pauses on lid close** to avoid overheating in a bag.
+- **No network, no telemetry, no background polling** beyond a 2s lid-state check via `ioreg`.
+
+The only "risk" is battery life: leaving it ON with the lid open drains the battery like normal active use. Toggle Off or close the lid when you don't need it awake.
+
+## Requirements
+
+- macOS 11 (Big Sur) or later
+- Xcode Command Line Tools (`xcode-select --install`)
+
+## Project layout
+
+```
+KeepAwake/
+├── src/main.swift          # the entire app (~350 lines, Swift + Cocoa + IOKit)
+├── scripts/build.sh        # build + install
+├── Info.plist              # bundle metadata
+├── assets/screenshot.png   # menu-bar popup screenshot
+├── LICENSE                 # MIT
+└── README.md
+```
+
+## License
+
+[MIT](LICENSE) © 2026 [Blprk](https://github.com/Blprk)
+
+## Contributing
+
+Issues and PRs welcome. The whole app is a single Swift file — easy to read, easy to hack.
