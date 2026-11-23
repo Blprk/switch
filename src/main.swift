@@ -107,10 +107,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         UserDefaults.standard.removeObject(forKey: "isOn") // stale key
         loadPreferences()
 
+        loadSession() // may clear an expired session and reset userWantsOn
         let defaults = UserDefaults.standard
         let savedOn = (defaults.object(forKey: "userWantsOn") as? Bool) ?? true
-        loadSession()
-
         let closed = isLidClosed()
         state = savedOn ? (closed ? .lidPaused : .active) : .off
         if state != .off { sessionStartedAt = Date() }
