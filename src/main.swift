@@ -23,6 +23,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var lidTimer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Single-instance guard
+        let running = NSRunningApplication.runningApplications(withBundleIdentifier: "com.user.keepawakeapp")
+        if running.count > 1 {
+            NSApp.terminate(nil)
+            return
+        }
         NSApp.setActivationPolicy(.accessory)
         ProcessInfo.processInfo.disableAutomaticTermination("KeepAwake")
 
