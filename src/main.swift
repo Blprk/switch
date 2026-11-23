@@ -27,6 +27,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var appChoices: [(name: String, bundleID: String)] = []
     var downloadBaseline: [String: Int64] = [:]
     var lastDownloadActivity: Date = Date()
+    var downloadSourceNote: String = "Downloads folder"
 
     var awakeSince: Date?
     var lastSleepLine: String = "—"
@@ -187,6 +188,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 endSession()
             }
         }
+        updateButton()
     }
 
     func downloadSnapshot() -> [String: Int64] {
@@ -206,11 +208,65 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func resetDownloadBaseline() {
         downloadBaseline = downloadSnapshot()
         lastDownloadActivity = Date()
+        _ = browserDownloadsActive()
+    }
+
+    // Direct browser download detection: Safari Downloads.plist + Chromium History DBs.
+    // Returns false when the stores are unreadable (macOS TCC / Full Disk Access).
+    func browserDownloadsActive() -> Bool {
+        var active = false
+        var directRead = false
+
+        // Safari
+        let safari = NSString(string: "~/Library/Safari/Downloads.plist").expandingTildeInPath
+        if FileManager.default.fileExists(atPath: safari) {
+            let out = shell("/usr/bin/plutil -convert json -o - \"\(safari)\" 2>/dev/null")
+            if !out.isEmpty,
+               let data = out.data(using: .utf8),
+               let json = try? JSONSerialization.jsonObject(with: data),
+               let dict = json as? [String: Any],
+               let items = dict["DownloadHistory"] as? [[String: Any]] {
+                directRead = true
+                for item in items {
+                    if let state = item["DownloadEntryState"] as? Int, state == 0 {
+                        active = true
+                    }
+                    if let soFar = item["DownloadEntryProgressBytesSoFar"] as? Int,
+                       let total = item["DownloadEntryProgressTotalToLoad"] as? Int,
+                       total > 0, soFar < total {
+                        active = true
+                    }
+                }
+            }
+        }
+
+        // Chromium browsers (Chrome, Brave, Edge, Vivaldi)
+        let cmd = """
+        setopt NULL_GLOB
+        for f in "$HOME/Library/Application Support/Google/Chrome"/*/History \
+                 "$HOME/Library/Application Support/BraveSoftware/Brave-Browser"/*/History \
+                 "$HOME/Library/Application Support/Microsoft Edge"/*/History \
+                 "$HOME/Library/Application Support/Vivaldi"/*/History; do
+          [ -f "$f" ] || continue
+          n=$(/usr/bin/sqlite3 "file:$f?immutable=1" "SELECT count(*) FROM downloads WHERE state=0;" 2>/dev/null)
+          [ -n "$n" ] && [ "$n" != "0" ] && echo ACTIVE
+        done
+        """
+        let chromeOut = shell(cmd)
+        if chromeOut.contains("ACTIVE") {
+            active = true
+            directRead = true
+        }
+
+        downloadSourceNote = directRead
+            ? "Browser events + Downloads folder"
+            : "Downloads folder (grant Full Disk Access for browser events)"
+        return active
     }
 
     func downloadIsActive() -> Bool {
         let snap = downloadSnapshot()
-        var active = false
+        var active = browserDownloadsActive()
         let partials = [".download", ".crdownload", ".part", ".tmp"]
         for (name, size) in snap {
             if partials.contains(where: { name.lowercased().hasSuffix($0) }) {
@@ -487,7 +543,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             "Uptime: \(uptimeLine)",
             "Awake: \(awakeDurationString())",
             "Last sleep: \(lastSleepLine)",
-            "Sleeps (recent): \(sleepCount)"
+            "Sleeps (recent): \(sleepCount)",
+            "Download source: \(downloadSourceNote)"
         ]
         for line in stats {
             let lbl = NSTextField(labelWithString: line)
@@ -551,18 +608,29 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return vc
     }
 
+    func menuBarTitle() -> String {
+        if pausedByLid { return "⏸" }
+        guard userWantsOn else { return "○ OFF" }
+        if [.minutes, .hours, .until].contains(sessionMode),
+           let end = sessionEndDate {
+            let s = Int(end.timeIntervalSinceNow)
+            if s <= 0 { return "● 0m" }
+            let h = s / 3600
+            let m = (s % 3600) / 60
+            return h > 0 ? "● \(h)h\(m)m" : "● \(m)m"
+        }
+        return "● ON"
+    }
+
     func updateButton() {
         if let button = statusItem.button {
-            let title: String
+            let title = menuBarTitle()
             let color: NSColor
             if pausedByLid {
-                title = "⏸"
                 color = .systemOrange
             } else if userWantsOn {
-                title = "● ON"
                 color = .systemGreen
             } else {
-                title = "○ OFF"
                 color = .secondaryLabelColor
             }
             let attrs: [NSAttributedString.Key: Any] = [

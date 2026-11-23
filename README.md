@@ -43,9 +43,13 @@ Click the menu-bar icon to open the popup. Under **Start New Session:** choose:
 - **Minutes** / **Hours** — preset durations (5–60 min, 1–12 hr); ends automatically
 - **Other Time/Until** — until 5 PM, 11 PM, midnight, in 30 min, or in 2 hours
 - **While App is Running** — pick a running app; session ends when it quits
-- **While File is Downloading** — watches `~/Downloads` for file growth / partial-download extensions and ends ~30 s after downloads stop
+- **While File is Downloading** — detects active downloads directly from Safari (`Downloads.plist`) and Chromium browsers' `History` DB (Chrome, Brave, Edge, Vivaldi: `downloads.state = 0`), plus a `~/Downloads` folder heuristic (file growth / `.download`, `.crdownload`, `.part`, `.tmp`). Ends ~30 s after all activity stops.
 
-Active sessions persist in `UserDefaults` and resume at login (expired timed sessions do not). The menu-bar icon shows `● ON` / `⏸` (lid paused) / `○ OFF`, and the popup header shows the remaining time or session condition.
+**What happens when you click Start:** the chosen mode and its parameters are saved to `UserDefaults`, the IOPM assertions are engaged, and the session is monitored every 2 s. For timed modes the menu bar shows a live countdown (`● 14m`, `● 1h23m`) and the app ends the session at the deadline. For "While App is Running" it ends when that app quits. For "While Downloading" it ends 30 s after the last detected download activity. Closing the lid always pauses the assertions; reopening resumes them if the session is still active.
+
+Active sessions persist in `UserDefaults` and resume at login (expired timed sessions do not). The menu-bar icon shows `● ON` / a countdown / `⏸` (lid paused) / `○ OFF`, and the popup header shows the remaining time or session condition.
+
+> **Note:** Safari and Chromium download stores are protected by macOS. If KeepAwake can't read them, it falls back to the `~/Downloads` heuristic and the popup shows "grant Full Disk Access for browser events". You can grant it in **System Settings → Privacy & Security → Full Disk Access**.
 
 ## Install
 
