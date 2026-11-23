@@ -28,9 +28,9 @@ A tiny, native macOS menu-bar app that keeps your Mac awake — **only when you 
 | Assertions held | `PreventUserIdleDisplaySleep`, `PreventUserIdleSystemSleep`, `PreventSystemSleep`, `PreventDiskIdle`, `UserIsActive` |
 | Session modes | **Indefinitely**, **Minutes**, **Hours**, **Other Time/Until**, **While App is Running**, **While File is Downloading** |
 | Lid-close handling | Auto-releases assertions on close, re-engages on open |
-| Stats shown | Power source, battery %, uptime, awake duration, last sleep/wake, sleep count, recent events |
+| Live info shown | State, session condition + exit time, last event, assertion count, power source, battery %, lid state, uptime, session age, download source |
 | Auto-launch | `~/Library/LaunchAgents/com.user.keepawakeapp.plist` (`RunAtLoad`) |
-| Binary size | ~140 KB (`-Osize`, dead-strip, stripped) |
+| Binary size | ~137 KB (`-Osize`, dead-strip, stripped) |
 | Memory | ~a few MB; ~0% CPU (2s lid/session check via `ioreg`) |
 
 ## Session modes

@@ -32,6 +32,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // Session configuration (meaningful while state is .active or .lidPaused)
     var sessionMode: SessionMode = .indefinite
     var sessionEndDate: Date?
+    var sessionStartedAt: Date?
     var sessionAppBundleID: String?
     var sessionAppName: String?
     var appChoices: [(name: String, bundleID: String)] = []
@@ -41,14 +42,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var lastDownloadActivity: Date = Date()
     var downloadSource: String = "Downloads folder"
 
-    // Stats display
-    var awakeSince: Date?
-    var lastSleepLine: String = "—"
-    var sleepCount: Int = 0
-    var recentEvents: [String] = []
+    // Live display stats
     var batteryLine: String = "—"
     var powerSource: String = "—"
     var uptimeLine: String = "—"
+    var lidIsClosed: Bool = false
 
     // IOPM assertions
     var assertionIDs: [IOPMAssertionID] = []
@@ -87,6 +85,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let lidClosed = isLidClosed()
         state = savedOn ? (lidClosed ? .lidPaused : .active) : .off
         lastEvent = "Launched"
+        if state != .off { sessionStartedAt = Date() }
         if state == .active { acquireAssertions() }
         if sessionMode == .download { resetDownloadBaseline() }
 
@@ -134,6 +133,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                       event: String) {
         sessionMode = mode
         sessionEndDate = endDate
+        sessionStartedAt = Date()
         sessionAppBundleID = appBundleID
         sessionAppName = appName
         if mode == .download { resetDownloadBaseline() }
@@ -177,10 +177,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func isLidClosed() -> Bool {
         let out = shell("ioreg -r -k AppleClamshellState -d 1 2>/dev/null")
+        var closed = false
         for line in out.components(separatedBy: "\n") where line.lowercased().contains("appleclamshellstate\"") {
-            return line.lowercased().contains("= yes")
+            closed = line.lowercased().contains("= yes")
         }
-        return false
+        lidIsClosed = closed
+        return closed
     }
 
     func checkLid() {
@@ -329,6 +331,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         for key in ["sessionMode", "sessionEndDate", "sessionAppBundleID", "sessionAppName"] {
             d.removeObject(forKey: key)
         }
+        sessionStartedAt = nil
     }
 
     // MARK: - Explicit descriptions
@@ -349,6 +352,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         case .download:
             return "Ends 30s after downloads stop"
         }
+    }
+
+    func sessionUptimeString() -> String {
+        guard let started = sessionStartedAt else { return "—" }
+        let seconds = Int(Date().timeIntervalSince(started))
+        if seconds < 0 { return "—" }
+        let h = seconds / 3600
+        let m = (seconds % 3600) / 60
+        return h > 0 ? "\(h)h \(m)m" : "\(m)m"
+    }
+
+    func sessionEndTimeString() -> String {
+        guard let end = sessionEndDate else { return "—" }
+        let formatter = DateFormatter()
+        formatter.dateStyle = .none
+        formatter.timeStyle = .short
+        return formatter.string(from: end)
     }
 
     func menuBarTitle() -> String {
@@ -614,19 +634,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         line("Power: \(powerSource)")
         line("Battery: \(batteryLine)")
+        line("Lid: \(lidIsClosed ? "Closed" : "Open")")
         line("Uptime: \(uptimeLine)")
-        line("Awake: \(awakeDurationString())")
-        line("Last sleep: \(lastSleepLine)")
-        line("Sleeps (recent): \(sleepCount)")
-        line("Download source: \(downloadSource)", color: .secondaryLabelColor)
-
-        if !recentEvents.isEmpty {
-            divider()
-            line("Recent Sleep/Wake", font: .boldSystemFont(ofSize: 11), color: .secondaryLabelColor)
-            for event in recentEvents {
-                line(event, font: .monospacedSystemFont(ofSize: 10, weight: .regular), color: .secondaryLabelColor)
-            }
+        line("Session age: \(sessionUptimeString())")
+        if [.minutes, .hours, .until].contains(sessionMode), sessionEndDate != nil {
+            line("Ends at: \(sessionEndTimeString())")
         }
+        line("Download source: \(downloadSource)", color: .secondaryLabelColor)
 
         divider()
         let buttons = NSStackView()
@@ -705,71 +719,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             uptimeLine = value.trimmingCharacters(in: CharacterSet(charactersIn: " ,"))
         }
 
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy.MM.dd"
-        let today = formatter.string(from: Date())
-        let yesterday = formatter.string(from: Date().addingTimeInterval(-86400))
-        let filter = "grep -iE 'Entering Sleep|Wake from|DarkWake'"
-        let command = "syslog -f /var/log/powermanagement/\(yesterday).asl 2>/dev/null | \(filter); syslog -f /var/log/powermanagement/\(today).asl 2>/dev/null | \(filter)"
-        let lines = shell(command).components(separatedBy: "\n")
-
-        var sleeps: [String] = []
-        var wakes: [String] = []
-        var recent: [String] = []
-        for line in lines {
-            if line.contains("Entering Sleep") {
-                sleeps.append(line)
-                recent.append("⬇ " + describe(line))
-            } else if line.contains("Wake from") || line.contains("DarkWake") {
-                wakes.append(line)
-                recent.append("⬆ " + describe(line))
-            }
-        }
-        sleepCount = sleeps.count
-        lastSleepLine = sleeps.last.map { describe($0) } ?? "—"
-        if let lastWake = wakes.last {
-            parseWakeTime(lastWake)
-        } else {
-            awakeSince = nil
-        }
-        recentEvents = Array(recent.suffix(8)).reversed()
-    }
-
-    func describe(_ line: String) -> String {
-        let trimmed = line.trimmingCharacters(in: .whitespaces)
-        let parts = trimmed.split(separator: " ", maxSplits: 4, omittingEmptySubsequences: true)
-        let time = parts.count >= 3 ? "\(parts[0]) \(parts[1]) \(parts[2])" : ""
-        var reason = trimmed
-        if let start = trimmed.range(of: "due to '") {
-            let rest = trimmed[start.upperBound...]
-            if let end = rest.range(of: "'") { reason = String(rest[..<end.lowerBound]) }
-        } else if let start = trimmed.range(of: "Wake from") {
-            var value = String(trimmed[start.lowerBound...])
-            if let end = value.range(of: "Using") {
-                value = String(value[..<end.lowerBound]).trimmingCharacters(in: .whitespaces)
-            }
-            reason = value
-        }
-        return time.isEmpty ? reason : "\(time) — \(reason)"
-    }
-
-    func parseWakeTime(_ line: String) {
-        let parts = line.trimmingCharacters(in: .whitespaces).split(separator: " ", maxSplits: 4, omittingEmptySubsequences: true)
-        guard parts.count >= 3 else { return }
-        let stamp = "\(Calendar.current.component(.year, from: Date())) \(parts[0]) \(parts[1]) \(parts[2])"
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy MMM dd HH:mm:ss"
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        awakeSince = formatter.date(from: stamp)
-    }
-
-    func awakeDurationString() -> String {
-        guard let since = awakeSince else { return "—" }
-        let seconds = Int(Date().timeIntervalSince(since))
-        if seconds < 0 { return "—" }
-        let hours = seconds / 3600
-        let minutes = (seconds % 3600) / 60
-        return hours > 0 ? "\(hours)h \(minutes)m" : "\(minutes)m"
     }
 }
 
