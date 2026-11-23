@@ -152,20 +152,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var lidIsClosed: Bool = false
     var sleepEvents: [SleepEvent] = []
 
-    // Collapsible popup sections
-    var debugExpanded: Bool = false
-    var sleepLogExpanded: Bool = true
-
     // Live label references (updated in place — no popover rebuild)
     weak var headerLabel: NSTextField?
     weak var powerSwitch: PillToggle?
     weak var sessionLabel: NSTextField?
     weak var lastEventLabel: NSTextField?
     weak var assertionsLabel: NSTextField?
-
-    // Collapsible log containers
-    weak var sleepLogContainer: NSStackView?
-    weak var debugLogContainer: NSStackView?
 
     // Assertion IDs by type
     var assertionIDs: [String: IOPMAssertionID] = [:]
@@ -194,7 +186,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         ProcessInfo.processInfo.disableAutomaticTermination("KeepAwake")
         registerAppleScriptHandlers()
 
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        // Fixed width is critical: a changing menu-bar title changes button.bounds,
+        // which re-anchors (and visibly moves) the popover when the pill toggles.
+        statusItem = NSStatusBar.system.statusItem(withLength: 68)
         if let button = statusItem.button {
             button.action = #selector(togglePopover(_:))
             button.target = self
@@ -214,7 +208,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if state == .active { acquireAssertions() }
         if sessionMode == .download { resetDownloadBaseline() }
 
-        logEvent("Launched (v2.0.0)")
+        logEvent("Launched (v2.1.2)")
         updateUI()
 
         monitorTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
@@ -716,17 +710,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         case 1: prefs.keepDisplay = on
         case 2: prefs.keepSystem = on
         case 3: prefs.keepDisk = on
-        case 4: sleepLogExpanded = on
-        case 5: debugExpanded = on
         default: return
         }
-        if sender.tag <= 3 {
-            reconfigureAssertions()
-        } else if sender.tag == 4 {
-            sleepLogContainer?.isHidden = !on
-        } else if sender.tag == 5 {
-            debugLogContainer?.isHidden = !on
-        }
+        reconfigureAssertions()
     }
 
     @objc func settingChanged(_ sender: NSPopUpButton) {
@@ -791,7 +777,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func copyDiagnostics() {
         var lines = [
             "Switch Everywhere Diagnostics",
-            "Version: 2.0.0",
+            "Version: 2.1.2",
             "State: \(state.rawValue)",
             "Session: \(sessionMode.rawValue) — \(sessionDescription())",
             "Last event: \(lastEvent)",
@@ -832,7 +818,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// Updates the visible popover labels in place. Never replaces the content
     /// view controller — that is what caused the popup to flash on every click.
     func updateLabels() {
-        headerLabel?.stringValue = "Switch Everywhere — \(state.rawValue)"
+        headerLabel?.stringValue = "Switch"
         headerLabel?.textColor = stateColor()
         powerSwitch?.isOn = state != .off
         sessionLabel?.stringValue = state == .off ? "" : "Session: \(sessionDescription())"
@@ -881,8 +867,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Fixed size keeps the popover anchored — never re-fit from fittingSize.
-    private let popoverSize = NSSize(width: 280, height: 460)
+    /// Fixed size: keeps the anchor stable and never clips content.
+    private let popoverSize = NSSize(width: 280, height: 900)
 
     func showPopover() {
         guard let popover else { return }
@@ -900,7 +886,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let vc = makePopoverContent()
         vc.preferredContentSize = popoverSize
         popover.contentViewController = vc
-        // Do not touch popover.contentSize here: fixed size prevents jumping.
+        popover.contentSize = popoverSize
     }
 
     func row(label: String, control: NSView) -> NSStackView {
@@ -942,34 +928,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func makePopoverContent() -> NSViewController {
         let vc = NSViewController()
-        let view = NSView(frame: NSRect(x: 0, y: 0, width: 280, height: 460))
+        let view = NSView(frame: NSRect(x: 0, y: 0, width: 280, height: 900))
 
-        let scroll = NSScrollView(frame: view.bounds)
-        scroll.hasVerticalScroller = true
-        scroll.autohidesScrollers = true
-        scroll.drawsBackground = false
-        scroll.borderType = .noBorder
-        scroll.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(scroll)
-        NSLayoutConstraint.activate([
-            scroll.topAnchor.constraint(equalTo: view.topAnchor),
-            scroll.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            scroll.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            scroll.bottomAnchor.constraint(equalTo: view.bottomAnchor)
-        ])
-
+        // No NSScrollView: when its document is shorter than the clip view,
+        // AppKit parks it at the bottom and leaves a gap above the header.
         let stack = NSStackView()
         stack.orientation = .vertical
         stack.alignment = .left
         stack.spacing = 5
         stack.edgeInsets = NSEdgeInsets(top: 10, left: 12, bottom: 10, right: 12)
         stack.translatesAutoresizingMaskIntoConstraints = false
-        scroll.documentView = stack
+        view.addSubview(stack)
         NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
-            stack.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: scroll.contentView.trailingAnchor),
-            stack.widthAnchor.constraint(equalTo: scroll.widthAnchor, constant: -18)
+            stack.topAnchor.constraint(equalTo: view.topAnchor),
+            stack.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            stack.widthAnchor.constraint(equalTo: view.widthAnchor)
         ])
 
         // Builders -----------------------------------------------------------
@@ -1021,7 +995,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         dot.heightAnchor.constraint(equalToConstant: 9).isActive = true
         header.addArrangedSubview(dot)
 
-        let title = NSTextField(labelWithString: "Switch Everywhere — \(state.rawValue)")
+        let title = NSTextField(labelWithString: "Switch")
         title.font = .systemFont(ofSize: 12, weight: .semibold)
         title.textColor = stateColor()
         title.lineBreakMode = .byTruncatingTail
@@ -1118,14 +1092,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         label("Download source: \(downloadSource)", in: stack, color: .secondaryLabelColor, wrap: true)
         rule(in: stack)
 
-        // Sleep/Wake log — one container, collapses fully ---------------------
-        let sleepBox = NSStackView()
-        sleepBox.orientation = .vertical
-        sleepBox.alignment = .left
-        sleepBox.spacing = 4
-        sleepBox.addArrangedSubview(checkbox("Sleep/Wake Log (\(sleepEvents.count))", on: sleepLogExpanded, tag: 4))
+        // Sleep/Wake log — always shown -------------------------------------
+        sectionTitle("SLEEP/WAKE LOG (\(sleepEvents.count))", in: stack)
         if sleepEvents.isEmpty {
-            label("  No recent events", in: sleepBox, font: .systemFont(ofSize: 10), color: .secondaryLabelColor)
+            label("  No recent events", in: stack, font: .systemFont(ofSize: 10), color: .secondaryLabelColor)
         } else {
             for event in sleepEvents {
                 let eventRow = NSStackView()
@@ -1135,30 +1105,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 label("\(event.time)  \(event.symbol)", in: eventRow,
                       font: .monospacedSystemFont(ofSize: 9, weight: .regular), color: .secondaryLabelColor)
                 label(event.reason, in: eventRow, font: .systemFont(ofSize: 10), color: .labelColor, wrap: true)
-                sleepBox.addArrangedSubview(eventRow)
+                stack.addArrangedSubview(eventRow)
             }
         }
-        sleepBox.isHidden = !sleepLogExpanded
-        sleepLogContainer = sleepBox
-        stack.addArrangedSubview(sleepBox)
+        rule(in: stack)
 
-        // Debug log — one container, collapses fully -------------------------
-        let debugBox = NSStackView()
-        debugBox.orientation = .vertical
-        debugBox.alignment = .left
-        debugBox.spacing = 4
-        debugBox.addArrangedSubview(checkbox("Debug Log", on: debugExpanded, tag: 5))
-        for entry in eventLog.suffix(5) {
-            label("  \(entry)", in: debugBox, font: .monospacedSystemFont(ofSize: 9, weight: .regular),
+        // Debug log — always shown -------------------------------------------
+        sectionTitle("DEBUG LOG", in: stack)
+        for entry in eventLog.suffix(3) {
+            label("  \(entry)", in: stack, font: .monospacedSystemFont(ofSize: 9, weight: .regular),
                   color: .secondaryLabelColor, wrap: true)
         }
         let copyButton = NSButton(title: "Copy Diagnostics", target: self, action: #selector(copyDiagnostics))
         copyButton.bezelStyle = .rounded
         copyButton.controlSize = .small
-        debugBox.addArrangedSubview(copyButton)
-        debugBox.isHidden = !debugExpanded
-        debugLogContainer = debugBox
-        stack.addArrangedSubview(debugBox)
+        stack.addArrangedSubview(copyButton)
         rule(in: stack)
 
         // Footer -------------------------------------------------------------
@@ -1228,7 +1189,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let filter = "grep -iE 'Entering Sleep|Wake from|DarkWake'"
         let command = "syslog -f /var/log/powermanagement/\(yesterday).asl 2>/dev/null | \(filter); syslog -f /var/log/powermanagement/\(today).asl 2>/dev/null | \(filter)"
         let found = shell(command).components(separatedBy: "\n").compactMap { parseSleepEvent($0) }
-        sleepEvents = Array(found.suffix(5))
+        sleepEvents = Array(found.suffix(4))
     }
 
     func parseSleepEvent(_ line: String) -> SleepEvent? {

@@ -73,7 +73,7 @@ The popup states the current state, the session's exit condition ("Ends in 14m",
 
 ## Settings & controls
 
-The popup is a compact **single-column, scrollable panel** (280pt wide, fixed 460pt height) — back to the simpler design. The header has a custom pill toggle next to the app name for instant on/off. Its size is pinned, so toggling never moves the box. Logs use wrapping text and collapse fully with no leftover gaps.
+The popup is a compact **single-column panel** (280pt wide, fixed height). The header shows **Switch** with a custom pill toggle for instant on/off; its size is pinned so toggling never moves the box. **Sleep/Wake Log** and **Debug Log** are always visible with wrapping text.
 
 The **Settings** tab includes:
 
@@ -84,7 +84,7 @@ The **Settings** tab includes:
 - **Default session** — what "Turn On" starts: Indefinite or Last used (with its previous duration/app).
 - **Menu bar** — Countdown (`● 14m`), Dot (`● ON`), or Icon (`⏱`).
 - **Login at startup** — enable/disable the LaunchAgent from the popup.
-- **Sleep/Wake Log** and **Debug Log** — collapsible checkbox sections. Toggling them only hides/shows rows in place; the popup never rebuilds on a click, so it does not flash.
+- **Sleep/Wake Log** and **Debug Log** — always-visible sections with wrapping text. No collapsible controls, no hidden gaps.
 - **Copy Diagnostics** button puts version, state, session info, assertion groups, power, download source and the last 30 log lines on the clipboard.
 
 Changing assertion groups while a session is active releases and re-acquires only the enabled assertions.
@@ -180,7 +180,7 @@ The implementation is a single well-sectioned Swift file (`src/main.swift`) with
 - **Assertions** — individually configurable groups (display / system / disk)
 - **Monitoring** — 2s tick for lid + session checks; menu bar and popup labels update **in place** (no view rebuild, no flicker)
 - **Downloads** — Safari/Chromium store readers plus folder heuristic, with explicit return values
-- **UI** — popover construction with in-place label references and hide/show collapsible sections
+- **UI** — popover construction with in-place label references and a fixed, stable size
 - **AppleScript** — four event handlers registered via `NSAppleEventManager`
 
 Everything is documented in-code; no generated code, no dependencies beyond Cocoa + IOKit.

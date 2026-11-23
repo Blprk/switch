@@ -5,8 +5,8 @@
   <key>CFBundleName</key><string>Switch Everywhere</string>
   <key>CFBundleDisplayName</key><string>Switch Everywhere</string>
   <key>CFBundleIdentifier</key><string>com.user.keepawakeapp</string>
-  <key>CFBundleVersion</key><string>2.0.0</string>
-  <key>CFBundleShortVersionString</key><string>2.0.0</string>
+  <key>CFBundleVersion</key><string>2.1.2</string>
+  <key>CFBundleShortVersionString</key><string>2.1.2</string>
   <key>CFBundleExecutable</key><string>SwitchEverywhere</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>LSUIElement</key><true/>
