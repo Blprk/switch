@@ -73,7 +73,7 @@ The popup states the current state, the session's exit condition ("Ends in 14m",
 
 ## Settings & controls
 
-The popup is now a compact **tabbed** panel: **Session** (current state + start options), **Settings** (assertion groups, behaviour), **Logs** (live info + collapsible logs). Only one pane is visible, so there is no dead space. The header has a real pill toggle next to the app name for instant on/off.
+The popup is a compact **single-column, scrollable panel** (280pt wide, fixed 460pt height) — back to the simpler design. The header has a custom pill toggle next to the app name for instant on/off. Its size is pinned, so toggling never moves the box. Logs use wrapping text and collapse fully with no leftover gaps.
 
 The **Settings** tab includes:
 

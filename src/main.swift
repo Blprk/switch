@@ -40,6 +40,8 @@ final class PillToggle: NSView {
 
     private let knob = NSView()
     private let label = NSTextField(labelWithString: "")
+    private var knobOnConstraint: NSLayoutConstraint!
+    private var knobOffConstraint: NSLayoutConstraint!
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -72,6 +74,9 @@ final class PillToggle: NSView {
             knob.widthAnchor.constraint(equalToConstant: 16),
             knob.heightAnchor.constraint(equalToConstant: 16)
         ])
+        // Both constraints are created once; only their active state changes.
+        knobOnConstraint = knob.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -3)
+        knobOffConstraint = knob.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 3)
 
         let click = NSClickGestureRecognizer(target: self, action: #selector(clicked))
         addGestureRecognizer(click)
@@ -86,23 +91,13 @@ final class PillToggle: NSView {
 
     override var intrinsicContentSize: NSSize { NSSize(width: 42, height: 22) }
 
-    override func layout() {
-        super.layout()
-        // Knob sits right when on, left when off.
-        for c in constraints where c.firstItem === knob && c.firstAttribute == .leading { removeConstraint(c) }
-        for c in constraints where c.firstItem === knob && c.firstAttribute == .trailing { removeConstraint(c) }
-        if isOn {
-            knob.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -3).isActive = true
-        } else {
-            knob.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 3).isActive = true
-        }
-    }
-
     private func applyState() {
+        knobOnConstraint.isActive = isOn
+        knobOffConstraint.isActive = !isOn
         layer?.backgroundColor = (isOn ? NSColor.systemGreen : NSColor.tertiaryLabelColor).cgColor
         label.stringValue = isOn ? "ON" : "OFF"
         label.textColor = isOn ? .white : .controlTextColor
-        needsLayout = true
+        // No needsLayout: pure appearance change, stable intrinsic size.
     }
 
     @objc private func clicked() {
@@ -168,11 +163,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     weak var lastEventLabel: NSTextField?
     weak var assertionsLabel: NSTextField?
 
-    // Tabbed panes and collapsible log containers
-    var activeTab: Int = 0
-    weak var sessionPane: NSStackView?
-    weak var settingsPane: NSStackView?
-    weak var logsPane: NSStackView?
+    // Collapsible log containers
     weak var sleepLogContainer: NSStackView?
     weak var debugLogContainer: NSStackView?
 
@@ -233,7 +224,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if CommandLine.arguments.contains("--demo") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
                 NSApp.activate(ignoringOtherApps: true)
-                if CommandLine.arguments.contains("--logs") { self?.activeTab = 2 }
                 self?.togglePopover(nil)
                 self?.popover?.contentViewController?.view.window?.level = .floating
                 self?.popover?.contentViewController?.view.window?.orderFrontRegardless()
@@ -739,17 +729,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    @objc func tabChanged(_ sender: NSSegmentedControl) {
-        activeTab = sender.selectedSegment
-        showActivePane()
-    }
-
-    func showActivePane() {
-        sessionPane?.isHidden = activeTab != 0
-        settingsPane?.isHidden = activeTab != 1
-        logsPane?.isHidden = activeTab != 2
-    }
-
     @objc func settingChanged(_ sender: NSPopUpButton) {
         guard let item = sender.selectedItem else { return }
         switch sender.tag {
@@ -902,11 +881,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Fixed size keeps the popover anchored — never re-fit from fittingSize.
+    private let popoverSize = NSSize(width: 280, height: 460)
+
     func showPopover() {
         guard let popover else { return }
         let vc = makePopoverContent()
+        vc.preferredContentSize = popoverSize
         popover.contentViewController = vc
-        popover.contentSize = vc.view.fittingSize
+        popover.contentSize = popoverSize
         if let button = statusItem.button {
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         }
@@ -915,8 +898,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func rebuildPopover() {
         guard let popover, popover.isShown else { return }
         let vc = makePopoverContent()
+        vc.preferredContentSize = popoverSize
         popover.contentViewController = vc
-        popover.contentSize = vc.view.fittingSize
+        // Do not touch popover.contentSize here: fixed size prevents jumping.
     }
 
     func row(label: String, control: NSView) -> NSStackView {
@@ -958,53 +942,68 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func makePopoverContent() -> NSViewController {
         let vc = NSViewController()
-        let view = NSView()
-        view.wantsLayer = true
+        let view = NSView(frame: NSRect(x: 0, y: 0, width: 280, height: 460))
 
-        let root = NSStackView()
-        root.orientation = .vertical
-        root.alignment = .leading
-        root.spacing = 8
-        root.edgeInsets = NSEdgeInsets(top: 12, left: 14, bottom: 12, right: 14)
-        view.addSubview(root)
-        root.translatesAutoresizingMaskIntoConstraints = false
+        let scroll = NSScrollView(frame: view.bounds)
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.drawsBackground = false
+        scroll.borderType = .noBorder
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(scroll)
         NSLayoutConstraint.activate([
-            root.topAnchor.constraint(equalTo: view.topAnchor),
-            root.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            root.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            root.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+            scroll.topAnchor.constraint(equalTo: view.topAnchor),
+            scroll.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            scroll.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
-        view.widthAnchor.constraint(equalToConstant: 320).isActive = true
 
-        // Local builders -----------------------------------------------------
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .left
+        stack.spacing = 5
+        stack.edgeInsets = NSEdgeInsets(top: 10, left: 12, bottom: 10, right: 12)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        scroll.documentView = stack
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
+            stack.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: scroll.contentView.trailingAnchor),
+            stack.widthAnchor.constraint(equalTo: scroll.widthAnchor, constant: -18)
+        ])
+
+        // Builders -----------------------------------------------------------
         @discardableResult
         func label(_ text: String,
-                   in stack: NSStackView,
+                   in target: NSStackView,
                    font: NSFont = .systemFont(ofSize: 11),
-                   color: NSColor = .labelColor) -> NSTextField {
-            let field = NSTextField(labelWithString: text)
+                   color: NSColor = .labelColor,
+                   wrap: Bool = false) -> NSTextField {
+            let field: NSTextField
+            if wrap {
+                field = NSTextField(wrappingLabelWithString: text)
+                field.lineBreakMode = .byWordWrapping
+                field.maximumNumberOfLines = 0
+                field.preferredMaxLayoutWidth = 228
+                field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            } else {
+                field = NSTextField(labelWithString: text)
+                field.lineBreakMode = .byTruncatingTail
+                field.maximumNumberOfLines = 1
+            }
             field.font = font
             field.textColor = color
-            field.lineBreakMode = .byTruncatingTail
-            stack.addArrangedSubview(field)
+            target.addArrangedSubview(field)
             return field
         }
-        func rule(in stack: NSStackView) {
+        func rule(in target: NSStackView) {
             let box = NSBox()
             box.boxType = .separator
-            stack.addArrangedSubview(box)
-            box.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -28).isActive = true
+            target.addArrangedSubview(box)
+            box.widthAnchor.constraint(equalTo: target.widthAnchor, constant: -24).isActive = true
         }
-        func pane() -> NSStackView {
-            let stack = NSStackView()
-            stack.orientation = .vertical
-            stack.alignment = .leading
-            stack.spacing = 6
-            stack.translatesAutoresizingMaskIntoConstraints = false
-            return stack
-        }
-        func sectionTitle(_ text: String, in stack: NSStackView) {
-            label(text, in: stack, font: .systemFont(ofSize: 11, weight: .semibold), color: .secondaryLabelColor)
+        func sectionTitle(_ text: String, in target: NSStackView) {
+            label(text, in: target, font: .systemFont(ofSize: 10, weight: .semibold), color: .secondaryLabelColor)
         }
 
         // Header -------------------------------------------------------------
@@ -1012,7 +1011,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         header.orientation = .horizontal
         header.alignment = .centerY
         header.spacing = 8
-        header.widthAnchor.constraint(equalToConstant: 292).isActive = true
+        header.widthAnchor.constraint(equalToConstant: 252).isActive = true
 
         let dot = NSView(frame: NSRect(x: 0, y: 0, width: 9, height: 9))
         dot.wantsLayer = true
@@ -1023,9 +1022,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         header.addArrangedSubview(dot)
 
         let title = NSTextField(labelWithString: "Switch Everywhere — \(state.rawValue)")
-        title.font = .systemFont(ofSize: 13, weight: .semibold)
+        title.font = .systemFont(ofSize: 12, weight: .semibold)
         title.textColor = stateColor()
         title.lineBreakMode = .byTruncatingTail
+        title.maximumNumberOfLines = 1
         title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         header.addArrangedSubview(title)
         headerLabel = title
@@ -1037,45 +1037,29 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         pill.heightAnchor.constraint(equalToConstant: 22).isActive = true
         header.addArrangedSubview(pill)
         powerSwitch = pill
-        root.addArrangedSubview(header)
+        stack.addArrangedSubview(header)
 
-        // Tabs ---------------------------------------------------------------
-        let tabs = NSSegmentedControl(labels: ["Session", "Settings", "Logs"],
-                                      trackingMode: .selectOne,
-                                      target: self,
-                                      action: #selector(tabChanged(_:)))
-        tabs.segmentStyle = .texturedRounded
-        tabs.controlSize = .small
-        tabs.font = .systemFont(ofSize: 11)
-        tabs.selectedSegment = activeTab
-        tabs.widthAnchor.constraint(equalToConstant: 292).isActive = true
-        root.addArrangedSubview(tabs)
-
-        // Session pane -------------------------------------------------------
-        let session = pane()
-        sessionPane = session
-        sectionTitle("CURRENT SESSION", in: session)
-        sessionLabel = label(state == .off ? "No active session" : sessionDescription(), in: session,
-                             font: .systemFont(ofSize: 12, weight: .medium))
-        lastEventLabel = label("Last event: \(lastEvent)", in: session, color: .secondaryLabelColor)
+        sessionLabel = label(state == .off ? "No active session" : sessionDescription(), in: stack)
+        lastEventLabel = label("Last event: \(lastEvent)", in: stack, color: .secondaryLabelColor)
         assertionsLabel = label("Assertions: \(assertionIDs.count)/\(Self.allAssertionTypes.count)",
-                                in: session, color: .secondaryLabelColor)
-        rule(in: session)
+                                in: stack, color: .secondaryLabelColor)
+        rule(in: stack)
 
-        sectionTitle("START NEW SESSION", in: session)
+        // Start session ------------------------------------------------------
+        sectionTitle("START NEW SESSION", in: stack)
         let indefinite = NSButton(title: "Indefinitely", target: self, action: #selector(startIndefinite))
         indefinite.bezelStyle = .rounded
         indefinite.controlSize = .small
-        session.addArrangedSubview(row(label: "", control: indefinite))
-        session.addArrangedSubview(row(label: "Minutes", control: popup([
+        stack.addArrangedSubview(row(label: "", control: indefinite))
+        stack.addArrangedSubview(row(label: "Minutes", control: popup([
             ("5 min", 5), ("10 min", 10), ("15 min", 15), ("30 min", 30), ("45 min", 45), ("60 min", 60)
-        ], tag: 1, width: 110, action: #selector(sessionPreset(_:)))))
-        session.addArrangedSubview(row(label: "Hours", control: popup([
+        ], tag: 1, width: 100, action: #selector(sessionPreset(_:)))))
+        stack.addArrangedSubview(row(label: "Hours", control: popup([
             ("1 hr", 1), ("2 hr", 2), ("3 hr", 3), ("4 hr", 4), ("6 hr", 6), ("8 hr", 8), ("12 hr", 12)
-        ], tag: 2, width: 110, action: #selector(sessionPreset(_:)))))
-        session.addArrangedSubview(row(label: "Other/Until", control: popup([
+        ], tag: 2, width: 100, action: #selector(sessionPreset(_:)))))
+        stack.addArrangedSubview(row(label: "Other/Until", control: popup([
             ("5:00 PM", 1), ("11:00 PM", 2), ("Midnight", 3), ("In 30 min", 4), ("In 2 hours", 5)
-        ], tag: 3, width: 110, action: #selector(sessionPreset(_:)))))
+        ], tag: 3, width: 100, action: #selector(sessionPreset(_:)))))
 
         appChoices = NSWorkspace.shared.runningApplications.compactMap { app in
             guard let name = app.localizedName,
@@ -1086,106 +1070,98 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let appItems: [(String, Int)] = appChoices.isEmpty
             ? [("No apps", -1)]
             : appChoices.prefix(20).enumerated().map { ($0.element.name, $0.offset) }
-        session.addArrangedSubview(row(label: "While app runs", control: popup(appItems, tag: 4, width: 110,
-                                                                              action: #selector(sessionPreset(_:)))))
+        stack.addArrangedSubview(row(label: "While app runs", control: popup(appItems, tag: 4, width: 100,
+                                                                            action: #selector(sessionPreset(_:)))))
         let download = NSButton(title: "Start", target: self, action: #selector(startDownloadSession))
         download.bezelStyle = .rounded
         download.controlSize = .small
-        session.addArrangedSubview(row(label: "While downloading", control: download))
-        root.addArrangedSubview(session)
+        stack.addArrangedSubview(row(label: "While downloading", control: download))
+        rule(in: stack)
 
-        // Settings pane ------------------------------------------------------
-        let settings = pane()
-        settingsPane = settings
-        sectionTitle("ASSERTIONS", in: settings)
+        // Settings -----------------------------------------------------------
+        sectionTitle("SETTINGS", in: stack)
         let displayCheck = checkbox("Keep display awake", on: prefs.keepDisplay, tag: 1)
         displayCheck.toolTip = "Off lets the screen sleep while the Mac stays awake."
         let systemCheck = checkbox("Keep system awake", on: prefs.keepSystem, tag: 2)
         systemCheck.toolTip = "Blocks idle system sleep. PreventSystemSleep applies on AC power only."
-        let diskCheck = checkbox("Keep disks awake", on: prefs.keepDisk, tag: 3)
-        settings.addArrangedSubview(displayCheck)
-        settings.addArrangedSubview(systemCheck)
-        settings.addArrangedSubview(diskCheck)
-        rule(in: settings)
-
-        sectionTitle("BEHAVIOUR", in: settings)
+        stack.addArrangedSubview(displayCheck)
+        stack.addArrangedSubview(systemCheck)
+        stack.addArrangedSubview(checkbox("Keep disks awake", on: prefs.keepDisk, tag: 3))
         let folderButton = NSButton(title: (prefs.downloadFolder as NSString).lastPathComponent + "…",
                                     target: self, action: #selector(chooseDownloadFolder))
         folderButton.bezelStyle = .rounded
         folderButton.controlSize = .small
-        settings.addArrangedSubview(row(label: "Download folder", control: folderButton))
-        settings.addArrangedSubview(row(label: "Default session", control: popup([
+        stack.addArrangedSubview(row(label: "Download folder", control: folderButton))
+        stack.addArrangedSubview(row(label: "Default session", control: popup([
             ("Indefinite", 0), ("Last used", 1)
-        ], tag: 10, width: 110, action: #selector(settingChanged(_:)))))
-        settings.addArrangedSubview(row(label: "Menu bar", control: popup([
+        ], tag: 10, width: 100, action: #selector(settingChanged(_:)))))
+        stack.addArrangedSubview(row(label: "Menu bar", control: popup([
             ("Countdown", 0), ("Dot ● ON", 1), ("Icon ⏱", 2)
-        ], tag: 11, width: 110, action: #selector(settingChanged(_:)))))
+        ], tag: 11, width: 100, action: #selector(settingChanged(_:)))))
         let loginButton = NSButton(title: loginEnabled ? "On — click to disable" : "Off — click to enable",
                                    target: self, action: #selector(toggleLogin))
         loginButton.bezelStyle = .rounded
         loginButton.controlSize = .small
-        settings.addArrangedSubview(row(label: "Login at startup", control: loginButton))
-        root.addArrangedSubview(settings)
+        stack.addArrangedSubview(row(label: "Login at startup", control: loginButton))
+        rule(in: stack)
 
-        // Logs pane ----------------------------------------------------------
-        let logs = pane()
-        logsPane = logs
-        sectionTitle("LIVE INFO", in: logs)
-        label("Power: \(powerSource)", in: logs)
-        label("Battery: \(batteryLine)", in: logs)
-        label("Lid: \(lidIsClosed ? "Closed" : "Open")", in: logs)
-        label("Uptime: \(uptimeLine)", in: logs)
-        label("Session age: \(sessionUptimeString())", in: logs)
+        // Live info ----------------------------------------------------------
+        sectionTitle("LIVE INFO", in: stack)
+        label("Power: \(powerSource)", in: stack)
+        label("Battery: \(batteryLine)", in: stack)
+        label("Lid: \(lidIsClosed ? "Closed" : "Open")", in: stack)
+        label("Uptime: \(uptimeLine)", in: stack)
+        label("Session age: \(sessionUptimeString())", in: stack)
         if [.minutes, .hours, .until].contains(sessionMode), sessionEndDate != nil {
-            label("Ends at: \(sessionEndTimeString())", in: logs)
+            label("Ends at: \(sessionEndTimeString())", in: stack)
         }
-        label("Download source: \(downloadSource)", in: logs, color: .secondaryLabelColor)
-        rule(in: logs)
+        label("Download source: \(downloadSource)", in: stack, color: .secondaryLabelColor, wrap: true)
+        rule(in: stack)
 
-        // Each log is ONE container. Hiding it removes all of its rows and spacing.
-        let sleepBox = pane()
-        sleepLogContainer = sleepBox
+        // Sleep/Wake log — one container, collapses fully ---------------------
+        let sleepBox = NSStackView()
+        sleepBox.orientation = .vertical
+        sleepBox.alignment = .left
+        sleepBox.spacing = 4
         sleepBox.addArrangedSubview(checkbox("Sleep/Wake Log (\(sleepEvents.count))", on: sleepLogExpanded, tag: 4))
         if sleepEvents.isEmpty {
             label("  No recent events", in: sleepBox, font: .systemFont(ofSize: 10), color: .secondaryLabelColor)
         } else {
             for event in sleepEvents {
                 let eventRow = NSStackView()
-                eventRow.orientation = .horizontal
-                eventRow.alignment = .firstBaseline
-                eventRow.spacing = 6
-                let time = NSTextField(labelWithString: event.time)
-                time.font = .monospacedSystemFont(ofSize: 9, weight: .regular)
-                time.textColor = .secondaryLabelColor
-                time.widthAnchor.constraint(equalToConstant: 88).isActive = true
-                let detail = NSTextField(labelWithString: "\(event.symbol) \(event.reason)")
-                detail.font = .systemFont(ofSize: 10)
-                detail.lineBreakMode = .byTruncatingTail
-                eventRow.addArrangedSubview(time)
-                eventRow.addArrangedSubview(detail)
+                eventRow.orientation = .vertical
+                eventRow.alignment = .left
+                eventRow.spacing = 1
+                label("\(event.time)  \(event.symbol)", in: eventRow,
+                      font: .monospacedSystemFont(ofSize: 9, weight: .regular), color: .secondaryLabelColor)
+                label(event.reason, in: eventRow, font: .systemFont(ofSize: 10), color: .labelColor, wrap: true)
                 sleepBox.addArrangedSubview(eventRow)
             }
         }
         sleepBox.isHidden = !sleepLogExpanded
-        logs.addArrangedSubview(sleepBox)
+        sleepLogContainer = sleepBox
+        stack.addArrangedSubview(sleepBox)
 
-        let debugBox = pane()
-        debugLogContainer = debugBox
+        // Debug log — one container, collapses fully -------------------------
+        let debugBox = NSStackView()
+        debugBox.orientation = .vertical
+        debugBox.alignment = .left
+        debugBox.spacing = 4
         debugBox.addArrangedSubview(checkbox("Debug Log", on: debugExpanded, tag: 5))
         for entry in eventLog.suffix(5) {
             label("  \(entry)", in: debugBox, font: .monospacedSystemFont(ofSize: 9, weight: .regular),
-                  color: .secondaryLabelColor)
+                  color: .secondaryLabelColor, wrap: true)
         }
         let copyButton = NSButton(title: "Copy Diagnostics", target: self, action: #selector(copyDiagnostics))
         copyButton.bezelStyle = .rounded
         copyButton.controlSize = .small
         debugBox.addArrangedSubview(copyButton)
         debugBox.isHidden = !debugExpanded
-        logs.addArrangedSubview(debugBox)
-        root.addArrangedSubview(logs)
+        debugLogContainer = debugBox
+        stack.addArrangedSubview(debugBox)
+        rule(in: stack)
 
         // Footer -------------------------------------------------------------
-        rule(in: root)
         let buttons = NSStackView()
         buttons.orientation = .horizontal
         buttons.spacing = 8
@@ -1199,9 +1175,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             button.controlSize = .small
             buttons.addArrangedSubview(button)
         }
-        root.addArrangedSubview(buttons)
+        stack.addArrangedSubview(buttons)
 
-        showActivePane()
         vc.view = view
         return vc
     }
