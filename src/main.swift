@@ -83,6 +83,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     // Live label references (updated in place — no popover rebuild)
     weak var headerLabel: NSTextField?
+    weak var powerSwitch: NSButton?
     weak var sessionLabel: NSTextField?
     weak var lastEventLabel: NSTextField?
     weak var assertionsLabel: NSTextField?
@@ -136,7 +137,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if state == .active { acquireAssertions() }
         if sessionMode == .download { resetDownloadBaseline() }
 
-        logEvent("Launched (v1.4.2)")
+        logEvent("Launched (v2.0.0)")
         updateUI()
 
         monitorTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
@@ -322,7 +323,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let result = IOPMAssertionCreateWithName(
                 type as CFString,
                 IOPMAssertionLevel(kIOPMAssertionLevelOn),
-                "KeepAwake" as CFString,
+                "Switch Everywhere" as CFString,
                 &id
             )
             if result == kIOReturnSuccess {
@@ -710,8 +711,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func copyDiagnostics() {
         var lines = [
-            "KeepAwake Diagnostics",
-            "Version: 1.4.2",
+            "Switch Everywhere Diagnostics",
+            "Version: 2.0.0",
             "State: \(state.rawValue)",
             "Session: \(sessionMode.rawValue) — \(sessionDescription())",
             "Last event: \(lastEvent)",
@@ -752,8 +753,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// Updates the visible popover labels in place. Never replaces the content
     /// view controller — that is what caused the popup to flash on every click.
     func updateLabels() {
-        headerLabel?.stringValue = "KeepAwake — \(state.rawValue)"
+        headerLabel?.stringValue = "Switch Everywhere — \(state.rawValue)"
         headerLabel?.textColor = stateColor()
+        powerSwitch?.state = state == .off ? .off : .on
         sessionLabel?.stringValue = state == .off ? "" : "Session: \(sessionDescription())"
         lastEventLabel?.stringValue = "Last event: \(lastEvent)"
         assertionsLabel?.stringValue = "Assertions: \(assertionIDs.count)/\(Self.allAssertionTypes.count)"
@@ -897,7 +899,28 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return lineStack
         }
 
-        headerLabel = line("KeepAwake — \(state.rawValue)", font: .boldSystemFont(ofSize: 12), color: stateColor())
+        // Header: app name + state, with a native pill toggle next to the name.
+        let headerRow = NSStackView()
+        headerRow.orientation = .horizontal
+        headerRow.alignment = .centerY
+        headerRow.spacing = 8
+        let titleLabel = NSTextField(labelWithString: "Switch Everywhere — \(state.rawValue)")
+        titleLabel.font = .boldSystemFont(ofSize: 12)
+        titleLabel.textColor = stateColor()
+        titleLabel.lineBreakMode = .byTruncatingTail
+        headerRow.addArrangedSubview(titleLabel)
+        headerLabel = titleLabel
+
+        let pill = NSButton(frame: NSRect(x: 0, y: 0, width: 38, height: 20))
+        pill.setButtonType(.switch)
+        pill.controlSize = .small
+        pill.target = self
+        pill.action = #selector(toggleAction)
+        pill.state = state == .off ? .off : .on
+        pill.widthAnchor.constraint(equalToConstant: 38).isActive = true
+        headerRow.addArrangedSubview(pill)
+        powerSwitch = pill
+        stack.addArrangedSubview(headerRow)
         sessionLabel = line(state == .off ? "" : "Session: \(sessionDescription())")
         lastEventLabel = line("Last event: \(lastEvent)", color: .secondaryLabelColor)
         assertionsLabel = line("Assertions: \(assertionIDs.count)/\(Self.allAssertionTypes.count)", color: .secondaryLabelColor)

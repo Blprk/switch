@@ -2,17 +2,17 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleName</key><string>KeepAwake</string>
-  <key>CFBundleDisplayName</key><string>KeepAwake</string>
+  <key>CFBundleName</key><string>Switch Everywhere</string>
+  <key>CFBundleDisplayName</key><string>Switch Everywhere</string>
   <key>CFBundleIdentifier</key><string>com.user.keepawakeapp</string>
-  <key>CFBundleVersion</key><string>1.4.0</string>
-  <key>CFBundleShortVersionString</key><string>1.4.0</string>
-  <key>CFBundleExecutable</key><string>KeepAwake</string>
+  <key>CFBundleVersion</key><string>2.0.0</string>
+  <key>CFBundleShortVersionString</key><string>2.0.0</string>
+  <key>CFBundleExecutable</key><string>SwitchEverywhere</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>LSUIElement</key><true/>
   <key>LSMinimumSystemVersion</key><string>11.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSAppleScriptEnabled</key><true/>
-  <key>OSAScriptingDefinition</key><string>KeepAwake.sdef</string>
+  <key>OSAScriptingDefinition</key><string>SwitchEverywhere.sdef</string>
 </dict>
 </plist>

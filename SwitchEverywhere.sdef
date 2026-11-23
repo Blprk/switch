@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE dictionary SYSTEM "file://localhost/System/Library/DTDs/sdef.dtd">
 
-<dictionary title="KeepAwake Terminology">
+<dictionary title="Switch Everywhere Terminology">
 
     <suite name="KeepAwake Suite" code="Kawk" description="Control KeepAwake keep-awake sessions.">
 

@@ -1,4 +1,6 @@
-# KeepAwake
+# Switch Everywhere
+
+*formerly KeepAwake — same app, new name as of v2.0.0*
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform: macOS](https://img.shields.io/badge/Platform-macOS%2011%2B-lightgrey.svg)](https://www.apple.com/macos/)
@@ -6,7 +8,7 @@
 [![GitHub release](https://img.shields.io/github/v/release/Blprk/KeepAwake)](https://github.com/Blprk/KeepAwake/releases)
 [![Stars](https://img.shields.io/github/stars/Blprk/KeepAwake?style=social)](https://github.com/Blprk/KeepAwake/stargazers)
 
-A tiny, native macOS menu-bar app that keeps your Mac awake — **only when you want it to**, and **only while the lid is open**. No `caffeinate` subprocess, no sudo, no bloat. ~98 KB binary.
+A tiny, native macOS menu-bar app that keeps your Mac awake — **only when you want it to**. No `caffeinate` subprocess, no sudo, no bloat. ~175 KB binary. The popup header shows a compact **pill toggle** next to the app name for instant on/off.
 
 ![KeepAwake menu bar popup](assets/screenshot.png)
 
@@ -165,6 +167,21 @@ The only "risk" is battery life: leaving it ON with the lid open drains the batt
 
 - macOS 11 (Big Sur) or later
 - Xcode Command Line Tools (`xcode-select --install`)
+
+## Code notes
+
+The implementation is a single well-sectioned Swift file (`src/main.swift`) with explicit `// MARK:` groups:
+
+- **Models** — `SessionMode`, `AppState`, `MenuBarStyle`, `SleepEvent`, `Preferences`
+- **Lifecycle** — single-instance guard, preference/session loading, AppleEvent registration
+- **State machine** — `transition(to:event:)` is the only place assertions, persistence and UI change together
+- **Assertions** — individually configurable groups (display / system / disk)
+- **Monitoring** — 2s tick for lid + session checks; menu bar and popup labels update **in place** (no view rebuild, no flicker)
+- **Downloads** — Safari/Chromium store readers plus folder heuristic, with explicit return values
+- **UI** — popover construction with in-place label references and hide/show collapsible sections
+- **AppleScript** — four event handlers registered via `NSAppleEventManager`
+
+Everything is documented in-code; no generated code, no dependencies beyond Cocoa + IOKit.
 
 ## Project layout
 
