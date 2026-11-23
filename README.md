@@ -51,6 +51,20 @@ Active sessions persist in `UserDefaults` and resume at login (expired timed ses
 
 > **Note:** Safari and Chromium download stores are protected by macOS. If KeepAwake can't read them, it falls back to the `~/Downloads` heuristic and the popup shows "grant Full Disk Access for browser events". You can grant it in **System Settings → Privacy & Security → Full Disk Access**.
 
+## Explicit state model
+
+![Clean popup with explicit state](assets/screenshot-clean.png)
+
+There is one source of truth — `AppState` — with exactly three states and one transition function (`transition(to:event:)`) that owns assertions, persistence, and UI refresh:
+
+| State | Menu bar | Meaning | Exit |
+|---|---|---|---|
+| `OFF` | `○ OFF` | No session; no assertions held | Start any session |
+| `ACTIVE` | `● ON` or countdown | Session running; 5 assertions held | End Session, timer expiry, app quit, downloads idle, or lid close |
+| `LID PAUSED` | `⏸` | Session still saved, assertions released because lid is closed | Reopen lid → returns to `ACTIVE` |
+
+The popup states the current state, the session's exit condition ("Ends in 14m", "Ends when Safari quits", "Ends 30s after downloads stop"), the last transition event, and how many assertions are held. No hidden/implicit state flags remain.
+
 ## Install
 
 ### From source
