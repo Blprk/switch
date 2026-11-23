@@ -73,7 +73,9 @@ The popup states the current state, the session's exit condition ("Ends in 14m",
 
 ## Settings & controls
 
-The popup includes a **Settings** section:
+The popup is now a compact **tabbed** panel: **Session** (current state + start options), **Settings** (assertion groups, behaviour), **Logs** (live info + collapsible logs). Only one pane is visible, so there is no dead space. The header has a real pill toggle next to the app name for instant on/off.
+
+The **Settings** tab includes:
 
 - **Keep display awake** — turns off `PreventUserIdleDisplaySleep` + `UserIsActive`. Disable this to let the screen sleep while the Mac stays awake (e.g. during a download).
 - **Keep system awake** — turns off `PreventUserIdleSystemSleep` + `PreventSystemSleep` (the latter is AC-power only).
