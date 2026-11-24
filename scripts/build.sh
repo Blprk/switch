@@ -26,7 +26,7 @@ VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PLIS
 BUILD_DIR="$ROOT/.build"
 APP_DIR="$BUILD_DIR/${APP_NAME}.app"
 DIST_DIR="$ROOT/dist"
-ZIP_PATH="$DIST_DIR/${APP_NAME}-${VERSION}.zip"
+ZIP_PATH="$DIST_DIR/SwitchEverywhere-${VERSION}-macos.zip"
 SDK="$(xcrun --sdk macosx --show-sdk-path)"
 
 DO_INSTALL=1
@@ -43,7 +43,7 @@ Usage: scripts/build.sh [options]
 Options:
   --install      Install the built app to ~/Applications (default)
   --no-install   Skip installing to ~/Applications
-  --zip          Create dist/Switch Everywhere-<version>.zip
+  --zip          Create dist/SwitchEverywhere-<version>-macos.zip
   --sign         Sign with SIGN_IDENTITY (Developer ID + hardened runtime)
   --notarize     Notarize and staple the zip (implies --sign and --zip)
   -h, --help     Show this help
