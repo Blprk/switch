@@ -37,13 +37,15 @@ A tiny native macOS menu-bar app that keeps your Mac awake — only when you wan
 
 ## Install
 
+Requires macOS 11+ and the Xcode Command Line Tools (`xcrun swiftc`). The build produces a **universal** binary (x86_64 + arm64), so it runs on both Intel and Apple Silicon Macs.
+
 ```bash
 git clone https://github.com/Blprk/switch.git
 cd switch
 ./scripts/build.sh
 ```
 
-The app is installed to `~/Applications/Switch Everywhere.app` and registered to launch at login.
+The app is installed to `~/Applications/Switch Everywhere.app`. It is menu-bar only (`LSUIElement`) — there is no Dock icon, so look for the **Switch** indicator in the menu bar. To start it at login, open the popup and turn on **Settings → Login at startup**; the build script does not install the LaunchAgent for you.
 
 ### Manual
 
@@ -52,8 +54,57 @@ swiftc -Osize -o "$HOME/Applications/Switch Everywhere.app/Contents/MacOS/Switch
   src/main.swift -framework Cocoa -framework IOKit -Xlinker -dead_strip
 cp Info.plist "$HOME/Applications/Switch Everywhere.app/Contents/Info.plist"
 cp SwitchEverywhere.sdef "$HOME/Applications/Switch Everywhere.app/Contents/Resources/SwitchEverywhere.sdef"
-launchctl bootstrap gui/$(id -u) "$HOME/Library/LaunchAgents/com.user.keepawakeapp.plist"
 ```
+
+Then enable **Settings → Login at startup** in the popup to create and register the LaunchAgent.
+
+## Distribute
+
+Every build is universal, so one artifact covers all supported Macs. Run `./scripts/build.sh --help` for all options.
+
+### Unsigned zip (free)
+
+```bash
+./scripts/build.sh --no-install --zip
+# -> dist/Switch Everywhere-2.1.2.zip
+```
+
+Send that zip with these notes:
+
+```bash
+unzip "Switch Everywhere-2.1.2.zip" -d ~/Applications
+xattr -dr com.apple.quarantine "$HOME/Applications/Switch Everywhere.app"
+open "$HOME/Applications/Switch Everywhere.app"
+```
+
+`xattr -dr com.apple.quarantine ...` removes the download quarantine; right-clicking the app and choosing **Open → Open** does the same thing. Then enable **Settings → Login at startup**. Because the app is unsigned, macOS shows an "unidentified developer" warning on first run — that is expected.
+
+### Notarized zip (no warnings for recipients)
+
+Requires an Apple Developer Program membership and a **Developer ID Application** certificate in your Keychain.
+
+```bash
+SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
+APPLE_ID=you@example.com \
+APPLE_TEAM_ID=TEAMID \
+APPLE_APP_PASSWORD=xxxx-xxxx-xxxx-xxxx \
+./scripts/build.sh --no-install --notarize
+```
+
+This signs with the hardened runtime and a secure timestamp, submits the zip to Apple, staples the ticket, and re-zips the stapled app. To avoid putting your password on the command line, save a keychain profile once and reuse it:
+
+```bash
+xcrun notarytool store-credentials switch-notary \
+  --apple-id you@example.com --team-id TEAMID --password xxxx-xxxx-xxxx-xxxx
+
+NOTARY_PROFILE=switch-notary \
+SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
+./scripts/build.sh --no-install --notarize
+```
+
+Upload `dist/Switch Everywhere-<version>.zip` to a GitHub Release. Recipients still click **Open** once, but Gatekeeper will identify you as the developer. A DMG is optional — it is only a container and does not change Gatekeeper behavior. For Homebrew users, a Cask in your own tap that downloads the zip is a convenient extra.
+
+There is no auto-updater: recipients replace the `.app` manually to upgrade, so include the version number.
 
 ## Usage
 
